@@ -1,13 +1,14 @@
 [workspace]
 resolver = "3"
 members = [
-    "primitives/slack-source",
-    "primitives/slack-sink",
-    "primitives/github-source",
-    "primitives/github-sink",
-    "primitives/http-source",
-    "primitives/http-sink",
+    "primitives/console-sink",
     "primitives/exec-source",
+    "primitives/github-sink",
+    "primitives/github-source",
+    "primitives/http-sink",
+    "primitives/http-source",
+    "primitives/slack-sink",
+    "primitives/slack-source",
 ]
 
 [workspace.package]
