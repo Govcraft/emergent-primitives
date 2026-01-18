@@ -6,13 +6,13 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 
 | Name | Kind | Description | Status |
 |------|------|-------------|--------|
-| `http-source` | source | Generic HTTP webhook receiver | ✅ Ready |
-| `http-sink` | sink | Make outbound HTTP requests | ✅ Ready |
-| `exec-source` | source | Execute shell commands | ✅ Ready |
-| `slack-source` | source | Monitor Slack channels | 🚧 Stub |
-| `slack-sink` | sink | Post to Slack channels | 🚧 Stub |
-| `github-source` | source | GitHub webhook receiver | 🚧 Stub |
-| `github-sink` | sink | GitHub API interactions | 🚧 Stub |
+| [`http-source`](primitives/http-source/) | source | HTTP webhook receiver | ✅ Ready |
+| [`http-sink`](primitives/http-sink/) | sink | Outbound HTTP requests | ✅ Ready |
+| [`exec-source`](primitives/exec-source/) | source | Shell command executor | ✅ Ready |
+| `slack-source` | source | Monitor Slack channels | 🚧 Planned |
+| `slack-sink` | sink | Post to Slack channels | 🚧 Planned |
+| `github-source` | source | GitHub webhook receiver | 🚧 Planned |
+| `github-sink` | sink | GitHub API interactions | 🚧 Planned |
 
 ## Installation
 
