@@ -28,7 +28,7 @@ jobs:
           - aarch64-unknown-linux-gnu
           - x86_64-apple-darwin
           - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
+          # Windows not supported (Unix IPC)
         include:
           # Linux x86_64
           - target: x86_64-unknown-linux-gnu
@@ -54,12 +54,6 @@ jobs:
             ext: ''
             archive: tar.gz
             cross: false
-          # Windows x86_64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            ext: '.exe'
-            archive: zip
-            cross: false
 
     steps:
       - name: Checkout
@@ -84,32 +78,18 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} -p ${{ matrix.primitive }}
 
-      - name: Package (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Package
         shell: bash
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           ARCHIVE_NAME="${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.tar.gz"
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.primitive }}${{ matrix.ext }} dist/
+          cp target/${{ matrix.target }}/release/${{ matrix.primitive }} dist/
           cd dist
-          tar -czvf ../${ARCHIVE_NAME} ${{ matrix.primitive }}${{ matrix.ext }}
+          tar -czvf ../${ARCHIVE_NAME} ${{ matrix.primitive }}
           cd ..
           sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
-
-      - name: Package (Windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $VERSION = $env:GITHUB_REF -replace 'refs/tags/v', ''
-          $ARCHIVE_NAME = "${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.zip"
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.primitive }}${{ matrix.ext }}" -Destination dist/
-          Compress-Archive -Path "dist/${{ matrix.primitive }}${{ matrix.ext }}" -DestinationPath $ARCHIVE_NAME
-          $hash = (Get-FileHash -Algorithm SHA256 $ARCHIVE_NAME).Hash.ToLower()
-          "$hash  $ARCHIVE_NAME" | Out-File -FilePath "${ARCHIVE_NAME}.sha256" -Encoding ascii
-          "ARCHIVE_NAME=$ARCHIVE_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -117,7 +97,6 @@ jobs:
           name: ${{ matrix.primitive }}-${{ matrix.target }}
           path: |
             *.tar.gz
-            *.zip
             *.sha256
 
   release:
@@ -148,7 +127,6 @@ jobs:
         with:
           files: |
             artifacts/*.tar.gz
-            artifacts/*.zip
             artifacts/*.sha256
             checksums.txt
           generate_release_notes: true
