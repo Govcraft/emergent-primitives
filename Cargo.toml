@@ -18,7 +18,7 @@ repository = "https://github.com/Govcraft/emergent-primitives"
 
 [workspace.dependencies]
 # Core
-emergent-client = "0.4"
+emergent-client = { git = "https://github.com/Govcraft/emergent", version = "0.4" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1", features = ["derive"] }

@@ -31,7 +31,7 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::{
     process::Command,
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
 };
 
 /// Command executor that emits output events.

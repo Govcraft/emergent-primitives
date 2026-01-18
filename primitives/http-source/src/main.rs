@@ -20,12 +20,12 @@
 //! ```
 
 use axum::{
+    Router,
     body::Bytes,
     extract::State,
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
     routing::any,
-    Router,
 };
 use clap::Parser;
 use emergent_client::{EmergentMessage, EmergentSource};
@@ -33,7 +33,7 @@ use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::Sha256;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// HTTP webhook receiver that emits http.request events.
 #[derive(Parser, Debug, Clone)]

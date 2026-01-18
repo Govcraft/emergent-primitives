@@ -32,7 +32,7 @@ use emergent_client::EmergentSink;
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// HTTP client that makes outbound requests from events.
 #[derive(Parser, Debug, Clone)]
