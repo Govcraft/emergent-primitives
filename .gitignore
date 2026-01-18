@@ -1,0 +1,22 @@
+# Build artifacts
+/target
+**/target
+
+# Hidden files and directories
+.*
+
+# Except .github for workflows
+!.github
+!.github/**
+!.gitignore
+
+# Text and markdown files
+*.txt
+*.md
+
+# Except README
+!README.md
+
+# OS
+.DS_Store
+Thumbs.db
