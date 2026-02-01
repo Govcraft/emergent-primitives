@@ -136,7 +136,7 @@ jobs:
         working-directory: primitives/${{ matrix.primitive }}
         run: |
           deno compile \
-            --allow-env --allow-read --allow-net \
+            --allow-env --allow-read --allow-write --allow-net \
             --include static \
             --target ${{ matrix.target }} \
             --output ${{ matrix.primitive }} \
