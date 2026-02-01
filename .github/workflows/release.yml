@@ -100,9 +100,69 @@ jobs:
             *.tar.gz
             *.sha256
 
+  build-deno:
+    name: Build ${{ matrix.primitive }} (Deno) for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        primitive:
+          - topology-viewer
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Build
+        working-directory: primitives/${{ matrix.primitive }}
+        run: |
+          deno compile \
+            --allow-env --allow-read --allow-net \
+            --include static \
+            --target ${{ matrix.target }} \
+            --output ${{ matrix.primitive }} \
+            main.ts
+
+      - name: Package
+        working-directory: primitives/${{ matrix.primitive }}
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          ARCHIVE_NAME="${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.tar.gz"
+          tar -czvf ${ARCHIVE_NAME} ${{ matrix.primitive }}
+          sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
+          mv ${ARCHIVE_NAME} ${ARCHIVE_NAME}.sha256 ../../
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.primitive }}-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.sha256
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-deno]
     runs-on: ubuntu-latest
     permissions:
       contents: write
