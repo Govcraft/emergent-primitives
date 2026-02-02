@@ -23,6 +23,16 @@ export class TopologyGraph {
   private encoder = new TextEncoder();
 
   /**
+   * Add an initial known node (e.g., the engine itself).
+   * Used for nodes that don't generate system.started events.
+   */
+  addInitialNode(node: TopologyNode): void {
+    if (!this.nodes.has(node.id)) {
+      this.nodes.set(node.id, node);
+    }
+  }
+
+  /**
    * Handle a system.started event.
    */
   handleStarted(payload: SystemEventPayload): void {
@@ -103,6 +113,35 @@ export class TopologyGraph {
       });
       this.broadcastEdges();
     }
+  }
+
+  /**
+   * Handle a full topology refresh from system.response.topology.
+   * Updates all nodes and broadcasts full state to SSE clients.
+   */
+  handleTopologyRefresh(primitives: Array<{
+    name: string;
+    kind: string;
+    state: string;
+    publishes: string[];
+    subscribes: string[];
+    pid?: number;
+    error?: string;
+  }>): void {
+    // Clear existing nodes except manually added ones (like emergent-engine)
+    // Actually, let's replace everything with the authoritative response
+    this.nodes.clear();
+
+    for (const prim of primitives) {
+      this.handleTopologyPrimitive(prim as TopologyPrimitive);
+    }
+
+    // Broadcast full state to all SSE clients
+    this.broadcast({
+      type: "topology:full",
+      data: this.getFullState(),
+      timestamp: Date.now(),
+    });
   }
 
   /**

@@ -12,8 +12,9 @@
  */
 
 import { EmergentSink } from "../../sdks/ts/mod.ts";
-import type { SystemEventPayload, TopologyPrimitive } from "../../sdks/ts/mod.ts";
+import type { SystemEventPayload } from "../../sdks/ts/mod.ts";
 import { TopologyGraph } from "./graph.ts";
+import type { TopologyNode } from "./types.ts";
 
 // Parse command line arguments
 function parseArgs(): { port: number } {
@@ -84,11 +85,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Subscriptions for system lifecycle events
+// Subscriptions for system lifecycle events and topology responses
 const SUBSCRIPTIONS = [
   "system.started.*",
   "system.stopped.*",
   "system.error.*",
+  "system.response.topology", // Responses to topology refresh requests
 ];
 
 // Connect to engine with retry logic
@@ -107,40 +109,46 @@ async function connectWithRetry(
       const sink = await EmergentSink.connect(name);
 
       try {
-        // Try to query current topology to populate initial state
-        // This may fail if the GetTopology IPC routing isn't working
-        try {
-          console.log(`[${name}] Connected, querying current topology...`);
-          const topology = await sink.getTopology();
-          console.log(`[${name}] Got ${topology.primitives.length} primitive(s)`);
-
-          // Populate graph with existing primitives
-          for (const prim of topology.primitives) {
-            graph.handleTopologyPrimitive(prim as TopologyPrimitive);
-          }
-        } catch (topoErr) {
-          console.log(`[${name}] Could not query topology (will rely on events): ${topoErr instanceof Error ? topoErr.message : topoErr}`);
-        }
-
-        // Subscribe to real-time updates
+        // Subscribe to real-time updates immediately
+        // Note: Sinks cannot query topology (they can only subscribe, not publish)
+        // Per Emergent architecture, sinks start first so we'll receive
+        // system.started.* events for all handlers and sources as they come online
         console.log(`[${name}] Subscribing to: ${SUBSCRIPTIONS.join(", ")}`);
         const stream = await sink.subscribe(SUBSCRIPTIONS);
 
         try {
           for await (const msg of stream) {
-            const payload = msg.payloadAs<SystemEventPayload>();
+            if (msg.messageType === "system.response.topology") {
+              // Handle topology refresh response
+              interface TopologyResponse {
+                primitives: Array<{
+                  name: string;
+                  kind: string;
+                  state: string;
+                  publishes: string[];
+                  subscribes: string[];
+                  pid?: number;
+                  error?: string;
+                }>;
+              }
+              const topoPayload = msg.payloadAs<TopologyResponse>();
+              console.log(`[${name}] Topology refresh: ${topoPayload.primitives.length} primitive(s)`);
+              graph.handleTopologyRefresh(topoPayload.primitives);
+            } else {
+              const payload = msg.payloadAs<SystemEventPayload>();
 
-            if (msg.messageType.startsWith("system.started.")) {
-              console.log(
-                `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
-              );
-              graph.handleStarted(payload);
-            } else if (msg.messageType.startsWith("system.stopped.")) {
-              console.log(`[${name}] Stopped: ${payload.name}`);
-              graph.handleStopped(payload);
-            } else if (msg.messageType.startsWith("system.error.")) {
-              console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
-              graph.handleError(payload);
+              if (msg.messageType.startsWith("system.started.")) {
+                console.log(
+                  `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
+                );
+                graph.handleStarted(payload);
+              } else if (msg.messageType.startsWith("system.stopped.")) {
+                console.log(`[${name}] Stopped: ${payload.name}`);
+                graph.handleStopped(payload);
+              } else if (msg.messageType.startsWith("system.error.")) {
+                console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
+                graph.handleError(payload);
+              }
             }
           }
         } finally {
@@ -172,6 +180,22 @@ async function main(): Promise<void> {
   const { port } = parseArgs();
   const name = Deno.env.get("EMERGENT_NAME") ?? "topology-viewer";
   const graph = new TopologyGraph();
+
+  // Add the engine as a known node (it doesn't emit system.started for itself)
+  const engineNode: TopologyNode = {
+    id: "emergent-engine",
+    kind: "source", // Engine acts as a source of system.* events
+    status: "running",
+    publishes: [
+      "system.started.*",
+      "system.stopped.*",
+      "system.error.*",
+      "system.shutdown",
+    ],
+    subscribes: [],
+    pid: undefined, // Unknown from our perspective
+  };
+  graph.addInitialNode(engineNode);
 
   console.log(`[${name}] Starting topology viewer on port ${port}`);
 

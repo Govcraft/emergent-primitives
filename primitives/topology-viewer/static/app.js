@@ -411,19 +411,58 @@ function connectSSE() {
   });
 }
 
+// Configuration - topology-api source endpoint
+// This should match the port configured for the topology-api source
+const TOPOLOGY_API_URL = "http://localhost:8892";
+
 /**
- * Manually refresh the topology from the API.
+ * Request a topology refresh via the topology-api source.
+ * The source publishes system.request.topology, engine responds with
+ * system.response.topology, which the topology-viewer sink receives.
  */
 async function refreshTopology() {
+  const refreshBtn = document.getElementById("refresh-btn");
+  if (refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Refreshing...";
+  }
+
+  try {
+    const response = await fetch(`${TOPOLOGY_API_URL}/refresh`);
+    if (!response.ok) {
+      console.error("[Refresh] Failed to request topology refresh:", response.statusText);
+      return;
+    }
+
+    const result = await response.json();
+    console.log("[Refresh] Request sent:", result);
+    // The actual topology update will come via SSE when the engine responds
+  } catch (err) {
+    console.error("[Refresh] Error:", err);
+    // If topology-api is not running, fall back to local state
+    console.log("[Refresh] Falling back to local state");
+    await refreshTopologyLocal();
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = "Refresh";
+    }
+  }
+}
+
+/**
+ * Fall back to local graph state if topology-api is not available.
+ */
+async function refreshTopologyLocal() {
   try {
     const response = await fetch("/api/topology");
     if (!response.ok) {
-      console.error("[Refresh] Failed to fetch topology:", response.statusText);
+      console.error("[Refresh] Failed to fetch local topology:", response.statusText);
       return;
     }
 
     const state = await response.json();
-    console.log("[Refresh] topology", state);
+    console.log("[Refresh] Local topology", state);
 
     // Preserve existing node positions
     const positionMap = new Map();
@@ -440,7 +479,7 @@ async function refreshTopology() {
     edges = state.edges;
     updateGraph();
   } catch (err) {
-    console.error("[Refresh] Error:", err);
+    console.error("[Refresh] Local error:", err);
   }
 }
 
