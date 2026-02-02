@@ -277,10 +277,12 @@ export class BaseClient {
     };
 
     // Wrap in IPC envelope (fire-and-forget, no reply expected)
+    // Note: message_type must match the registered type name in the engine
+    // Note: target must match the exposed actor name in the engine
     const envelope: IpcEnvelope = {
       correlation_id: generateCorrelationId("pub"),
-      target: "broker",
-      message_type: "Publish",
+      target: "message_broker", // Matches engine's runtime.ipc_expose("message_broker", ...)
+      message_type: "EmergentMessage", // Matches engine's registry.register::<IpcEmergentMessage>("EmergentMessage")
       payload: wireMessage,
       expects_reply: false,
     };
