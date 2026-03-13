@@ -312,7 +312,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "console-sink"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -450,9 +450,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5ab019b7241fcc9a89ca6457ebc1d3f9b7ae2bbbcaba124ed1795167c63c2"
+checksum = "6d6bf5c144f012c0088e63d8e322b101fdca57efc1514cfd582e238f73becabd"
 dependencies = [
  "acton-reactive",
  "futures",
@@ -479,12 +479,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "exec-handler"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "exec-source"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "github-sink"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "github-source"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "http-sink"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "http-source"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "axum",
  "clap",
@@ -1248,7 +1248,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1591,7 +1591,7 @@ checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "slack-sink"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "slack-source"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "emergent-client",
