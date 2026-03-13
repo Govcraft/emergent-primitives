@@ -136,7 +136,10 @@ async fn handle_request(
 
     match state.source.publish(message).await {
         Ok(()) => (StatusCode::ACCEPTED, "").into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to publish event").into_response(),
+        Err(e) => {
+            eprintln!("Failed to publish event: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to publish event").into_response()
+        }
     }
 }
 
