@@ -26,15 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         primitive:
-          - console-sink
           - exec-handler
-          - http-source
-          - http-sink
+          - exec-sink
           - exec-source
-          - slack-source
-          - slack-sink
-          - github-source
-          - github-sink
+          - http-source
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
