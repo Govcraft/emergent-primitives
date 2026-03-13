@@ -9,8 +9,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --no-tests=pass
+
   build:
     name: Build ${{ matrix.primitive }} for ${{ matrix.target }}
+    needs: [test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -82,16 +92,20 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          TAG_REF: ${{ github.ref }}
+          PRIMITIVE: ${{ matrix.primitive }}
+          TARGET: ${{ matrix.target }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          ARCHIVE_NAME="${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.tar.gz"
+          VERSION=${TAG_REF#refs/tags/v}
+          ARCHIVE_NAME="${PRIMITIVE}-${VERSION}-${TARGET}.tar.gz"
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.primitive }} dist/
+          cp "target/${TARGET}/release/${PRIMITIVE}" dist/
           cd dist
-          tar -czvf ../${ARCHIVE_NAME} ${{ matrix.primitive }}
+          tar -czvf "../${ARCHIVE_NAME}" "${PRIMITIVE}"
           cd ..
-          sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
-          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -103,6 +117,7 @@ jobs:
 
   build-deno:
     name: Build ${{ matrix.primitive }} (Deno) for ${{ matrix.target }}
+    needs: [test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -146,12 +161,16 @@ jobs:
       - name: Package
         working-directory: primitives/${{ matrix.primitive }}
         shell: bash
+        env:
+          TAG_REF: ${{ github.ref }}
+          PRIMITIVE: ${{ matrix.primitive }}
+          TARGET: ${{ matrix.target }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          ARCHIVE_NAME="${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.tar.gz"
-          tar -czvf ${ARCHIVE_NAME} ${{ matrix.primitive }}
-          sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
-          mv ${ARCHIVE_NAME} ${ARCHIVE_NAME}.sha256 ../../
+          VERSION=${TAG_REF#refs/tags/v}
+          ARCHIVE_NAME="${PRIMITIVE}-${VERSION}-${TARGET}.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" "${PRIMITIVE}"
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          mv "${ARCHIVE_NAME}" "${ARCHIVE_NAME}.sha256" ../../
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
