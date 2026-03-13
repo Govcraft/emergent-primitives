@@ -9,18 +9,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test
+  quality:
+    name: Quality Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo nextest run --no-tests=pass
 
   build:
     name: Build ${{ matrix.primitive }} for ${{ matrix.target }}
-    needs: [test]
+    needs: [quality]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -112,7 +116,7 @@ jobs:
 
   build-deno:
     name: Build ${{ matrix.primitive }} (Deno) for ${{ matrix.target }}
-    needs: [test]
+    needs: [quality]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
