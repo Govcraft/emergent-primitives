@@ -16,9 +16,9 @@ dependencies = [
 
 [[package]]
 name = "acton-macro"
-version = "8.0.0"
+version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1c09cf7d01174665dddc29aedfc3bdee07d4c76e1ba6214110e16b063e56b5"
+checksum = "a083e63aa4d15ae850fd669cef39fee8f55a57853be56d389d2159f28f2f7c86"
 dependencies = [
  "quote",
  "syn",
@@ -26,9 +26,9 @@ dependencies = [
 
 [[package]]
 name = "acton-reactive"
-version = "8.0.1"
+version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba97b52b6e245dbd9fa10f972f1e18474387c889c6ae4878e8ef6edf68b066e"
+checksum = "8d377be67e0dec120698e4840cea02919eba1fd56e77c31db90e24768f32d00f"
 dependencies = [
  "acton-ern",
  "acton-macro",
@@ -312,7 +312,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "console-sink"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -450,9 +450,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a0e7b965c2043f0fa7f7ce7f71fa89966434258e370eddd996d9326a444ec50"
+checksum = "c6f5ab019b7241fcc9a89ca6457ebc1d3f9b7ae2bbbcaba124ed1795167c63c2"
 dependencies = [
  "acton-reactive",
  "futures",
@@ -479,12 +479,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "exec-handler"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "exec-source"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "github-sink"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "github-source"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "http-sink"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "http-source"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "axum",
  "clap",
@@ -1248,7 +1248,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1591,7 +1591,7 @@ checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "slack-sink"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "slack-source"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "clap",
  "emergent-client",
