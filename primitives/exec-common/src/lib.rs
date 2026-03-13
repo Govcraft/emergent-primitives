@@ -1,8 +1,8 @@
-//! Shared command execution logic for Emergent exec primitives.
+//! Shared logic for Emergent exec primitives.
 //!
-//! Provides the core `execute_command` function used by both `exec-handler`
-//! and `exec-sink`. The function pipes a JSON payload to a command's stdin,
-//! captures stdout/stderr, and returns structured results.
+//! Provides:
+//! - `execute_command` / `execute_command_passthrough` — pipe JSON to stdin
+//! - `resolve_publish_types_from_env` — read `EMERGENT_PUBLISHES` env var
 
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -196,6 +196,29 @@ pub fn error_to_json(err: &ExecError) -> serde_json::Value {
             "stderr": format!("stdin write failed: {error}"),
             "command": command,
         }),
+    }
+}
+
+/// Resolve publish message types from the `EMERGENT_PUBLISHES` environment variable.
+///
+/// The engine sets `EMERGENT_PUBLISHES` to a comma-separated list of message types
+/// from the TOML config's `publishes` array. This function maps them positionally
+/// to the provided defaults:
+///
+/// - If the env var is set, each position maps to the corresponding default
+/// - If the env var is absent or a position is missing, the default is used
+///
+/// This allows the TOML config to be the single source of truth for message types.
+pub fn resolve_publish_types_from_env(defaults: &[&str]) -> Vec<String> {
+    if let Ok(publishes) = std::env::var("EMERGENT_PUBLISHES") {
+        let env_types: Vec<&str> = publishes.split(',').filter(|s| !s.is_empty()).collect();
+        defaults
+            .iter()
+            .enumerate()
+            .map(|(i, default)| env_types.get(i).unwrap_or(default).to_string())
+            .collect()
+    } else {
+        defaults.iter().map(|s| s.to_string()).collect()
     }
 }
 

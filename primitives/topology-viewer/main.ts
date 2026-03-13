@@ -11,8 +11,8 @@
  * The SDK automatically handles system.shutdown for graceful shutdown.
  */
 
-import { EmergentSink } from "../../sdks/ts/mod.ts";
-import type { SystemEventPayload } from "../../sdks/ts/mod.ts";
+import { EmergentSink } from "jsr:@govcraft/emergent@0.10.0";
+import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.10.0";
 import { TopologyGraph } from "./graph.ts";
 import type { TopologyNode } from "./types.ts";
 

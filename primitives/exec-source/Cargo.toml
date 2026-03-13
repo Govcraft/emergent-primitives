@@ -11,6 +11,7 @@ name = "exec-source"
 path = "src/main.rs"
 
 [dependencies]
+exec-common = { path = "../exec-common" }
 emergent-client.workspace = true
 clap.workspace = true
 tokio.workspace = true

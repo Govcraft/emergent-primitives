@@ -123,6 +123,7 @@ fn build_command(args: &Args) -> Command {
 async fn execute_command(
     args: &Args,
     source: &EmergentSource,
+    publish_types: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = build_command(args);
 
@@ -139,7 +140,7 @@ async fn execute_command(
             stdout,
             exit_code,
         };
-        let message = EmergentMessage::new("exec.output").with_payload(json!(payload));
+        let message = EmergentMessage::new(&publish_types[0]).with_payload(json!(payload));
         let _ = source.publish(message).await;
     }
 
@@ -151,7 +152,7 @@ async fn execute_command(
             stderr,
             exit_code,
         };
-        let message = EmergentMessage::new("exec.error").with_payload(json!(payload));
+        let message = EmergentMessage::new(&publish_types[1]).with_payload(json!(payload));
         let _ = source.publish(message).await;
     }
 
@@ -160,7 +161,7 @@ async fn execute_command(
         command: command_str,
         exit_code,
     };
-    let message = EmergentMessage::new("exec.exit").with_payload(json!(payload));
+    let message = EmergentMessage::new(&publish_types[2]).with_payload(json!(payload));
     let _ = source.publish(message).await;
 
     Ok(())
@@ -169,6 +170,10 @@ async fn execute_command(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Resolve publish types from EMERGENT_PUBLISHES env var or use defaults
+    let publish_types =
+        exec_common::resolve_publish_types_from_env(&["exec.output", "exec.error", "exec.exit"]);
 
     // Get the source name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "exec-source".to_string());
@@ -187,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.interval == 0 {
         // Run once and exit
-        execute_command(&args, &source).await?;
+        execute_command(&args, &source, &publish_types).await?;
         let _ = source.disconnect().await;
     } else {
         // Run repeatedly on interval
@@ -201,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 _ = interval.tick() => {
-                    if let Err(e) = execute_command(&args, &source).await {
+                    if let Err(e) = execute_command(&args, &source, &publish_types).await {
                         eprintln!("Command execution failed: {e}");
                     }
                 }

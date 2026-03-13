@@ -71,6 +71,14 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    // Resolve publish types: EMERGENT_PUBLISHES env > CLI args > defaults
+    let publish_types = exec_common::resolve_publish_types_from_env(&[
+        &args.publish_as,
+        &args.error_as,
+    ]);
+    let publish_as = &publish_types[0];
+    let error_as = &publish_types[1];
+
     // Validate that a command was provided after --
     if args.command.is_empty() {
         eprintln!("Error: no command specified. Provide a command after '--'.");
@@ -116,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(msg) => {
                         match execute_command(msg.payload(), &args.command, args.timeout).await {
                             Ok(result) => {
-                                let mut output = EmergentMessage::new(&args.publish_as)
+                                let mut output = EmergentMessage::new(publish_as)
                                     .with_causation_id(msg.id())
                                     .with_payload(result.stdout_payload);
 
@@ -127,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = handler.publish(output).await;
                             }
                             Err(exec_err) => {
-                                let error_msg = EmergentMessage::new(&args.error_as)
+                                let error_msg = EmergentMessage::new(error_as)
                                     .with_causation_id(msg.id())
                                     .with_payload(error_to_json(&exec_err));
 

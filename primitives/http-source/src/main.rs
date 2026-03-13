@@ -72,6 +72,7 @@ struct HttpRequestPayload {
 struct AppState {
     source: Arc<EmergentSource>,
     secret: Option<String>,
+    publish_type: String,
 }
 
 /// Validates HMAC-SHA256 signature.
@@ -132,7 +133,7 @@ async fn handle_request(
     };
 
     // Create and publish message
-    let message = EmergentMessage::new("http.request").with_payload(json!(payload));
+    let message = EmergentMessage::new(&state.publish_type).with_payload(json!(payload));
 
     match state.source.publish(message).await {
         Ok(()) => (StatusCode::ACCEPTED, "").into_response(),
@@ -159,10 +160,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Resolve publish type from EMERGENT_PUBLISHES env var or use default
+    let publish_type = std::env::var("EMERGENT_PUBLISHES")
+        .ok()
+        .and_then(|s| s.split(',').next().map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http.request".to_string());
+
     // Create shared state
     let state = Arc::new(AppState {
         source: Arc::new(source),
         secret: args.secret.clone(),
+        publish_type,
     });
 
     // Create router
