@@ -7,10 +7,22 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 | Name | Kind | Description |
 |------|------|-------------|
 | [`http-source`](primitives/http-source/) | source | HTTP webhook receiver |
-| [`http-sink`](primitives/http-sink/) | sink | Outbound HTTP requests |
-| [`exec-source`](primitives/exec-source/) | source | Shell command executor |
-| [`exec-handler`](primitives/exec-handler/) | handler | Pipe event payloads through any executable |
-| [`console-sink`](primitives/console-sink/) | sink | Output message payloads to stdout |
+| [`exec-source`](primitives/exec-source/) | source | Execute shell commands and emit output as events |
+| [`exec-handler`](primitives/exec-handler/) | handler | Pipe event payloads through any executable and publish results |
+| [`exec-sink`](primitives/exec-sink/) | sink | Pipe event payloads through any executable (fire-and-forget) |
+
+The exec trio covers most use cases without writing code:
+
+```bash
+# Console output (replaces a dedicated console-sink)
+exec-sink -s timer.tick -- jq .
+
+# HTTP POST (replaces a dedicated http-sink)
+exec-sink -s alert.fired -- curl -s -X POST -H "Content-Type: application/json" -d @- https://hooks.example.com
+
+# File logging
+exec-sink -s data.processed -- tee -a /var/log/events.jsonl
+```
 
 The [topology-viewer](https://github.com/Govcraft/emergent) sink ships with the engine repository.
 
@@ -21,7 +33,7 @@ Install via the Emergent marketplace CLI:
 ```bash
 emergent marketplace install http-source
 emergent marketplace install exec-handler
-emergent marketplace install console-sink
+emergent marketplace install exec-sink
 ```
 
 Or download binaries directly from [GitHub Releases](https://github.com/Govcraft/emergent-primitives/releases).
@@ -44,30 +56,6 @@ http-source --port 8080 --path /webhook
 
 **Publishes:** `http.request`
 
-### http-sink
-
-Make outbound HTTP requests from consumed events.
-
-```bash
-http-sink --base-url https://api.example.com --timeout 30
-```
-
-**Arguments:**
-- `--base-url`, `-u`: Base URL for requests (env: `HTTP_BASE_URL`)
-- `--timeout`, `-t`: Request timeout in seconds (default: 30)
-- `--retries`, `-r`: Retry attempts (default: 3)
-- `--auth-header`: Authorization header (env: `HTTP_AUTH_HEADER`)
-
-**Message Payload:**
-```json
-{
-  "url": "/endpoint",
-  "method": "POST",
-  "headers": { "Content-Type": "application/json" },
-  "body": { "data": "value" }
-}
-```
-
 ### exec-source
 
 Execute shell commands and emit output events.
@@ -87,34 +75,47 @@ exec-source --command date --interval 5000
 
 ### exec-handler
 
-Subscribe to events, pipe payloads through an executable, and publish the results.
+Subscribe to events, pipe payloads through an executable, and publish results.
 
 ```bash
-exec-handler --publish-as processed.result
+exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 ```
 
 **Arguments:**
-- `--publish-as`, `-p`: Message type for successful output (default: exec.output)
-- `--error-as`, `-e`: Message type for error output (default: exec.error)
+- `--subscribe`, `-s`: Message types to subscribe to (required, repeatable)
+- `--publish-as`: Message type for successful output (default: `exec.output`)
+- `--error-as`, `-e`: Message type for error output (default: `exec.error`)
 - `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `-- <command> [args...]`: The command to execute
 
-**Subscribes:** `*` (configurable via TOML)
-**Publishes:** `exec.output`, `exec.error`
+**Subscribes:** configurable via `--subscribe`
+**Publishes:** `exec.output`, `exec.error` (configurable)
 
-### console-sink
+### exec-sink
 
-Output message payloads to stdout.
+Subscribe to events and pipe payloads through an executable. Output is discarded (fire-and-forget).
 
 ```bash
-console-sink --subscribe timer.tick --pretty --timestamp
+# Pretty-print events to console
+exec-sink -s timer.tick -- jq .
+
+# POST to a webhook
+exec-sink -s alert.fired -- curl -s -X POST -H "Content-Type: application/json" -d @- https://hooks.example.com
+
+# Pipe through a custom script
+exec-sink -s user.created -- ./scripts/send-welcome-email.sh
 ```
 
 **Arguments:**
-- `--subscribe`, `-s`: Message types to subscribe to (can be repeated)
-- `--pretty`, `-p`: Pretty-print JSON output (env: `CONSOLE_SINK_PRETTY`)
-- `--timestamp`, `-t`: Include timestamps (env: `CONSOLE_SINK_TIMESTAMP`)
+- `--subscribe`, `-s`: Message types to subscribe to (required, repeatable)
+- `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `-- <command> [args...]`: The command to execute
 
-**Subscribes:** `*` (configurable via TOML or `--subscribe` flag)
+**Subscribes:** configurable via `--subscribe`
+
+## Shared Code
+
+The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, timeout handling, JSON output parsing, and structured error types.
 
 ## Development
 
@@ -145,8 +146,8 @@ cargo clippy --all-targets -- -D warnings
 
 Releases are automated via GitHub Actions. To create a new release:
 
-1. Tag the commit: `git tag v0.3.12`
-2. Push the tag: `git push origin v0.3.12`
+1. Tag the commit: `git tag v0.4.0`
+2. Push the tag: `git push origin v0.4.0`
 
 The workflow will:
 - Build for Linux (x86_64, aarch64), macOS (x86_64, aarch64)

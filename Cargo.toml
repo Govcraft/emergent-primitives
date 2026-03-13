@@ -1,15 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
-    "primitives/console-sink",
+    "primitives/exec-common",
     "primitives/exec-handler",
+    "primitives/exec-sink",
     "primitives/exec-source",
-    "primitives/http-sink",
     "primitives/http-source",
 ]
 
 [workspace.package]
-version = "0.3.11"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Govcraft/emergent-primitives"
@@ -32,7 +32,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Crypto (HMAC signature verification)
 hmac = "0.12"

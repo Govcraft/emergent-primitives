@@ -1,16 +1,17 @@
 [package]
-name = "console-sink"
-description = "Console output sink for Emergent"
+name = "exec-sink"
+description = "Exec sink for Emergent - pipe event payloads through executables"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "console-sink"
+name = "exec-sink"
 path = "src/main.rs"
 
 [dependencies]
+exec-common = { path = "../exec-common" }
 emergent-client.workspace = true
 clap.workspace = true
 tokio.workspace = true

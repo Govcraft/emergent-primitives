@@ -11,13 +11,11 @@ name = "exec-handler"
 path = "src/main.rs"
 
 [dependencies]
+exec-common = { path = "../exec-common" }
 emergent-client.workspace = true
 clap.workspace = true
 tokio.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
