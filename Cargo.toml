@@ -4,12 +4,8 @@ members = [
     "primitives/console-sink",
     "primitives/exec-handler",
     "primitives/exec-source",
-    "primitives/github-sink",
-    "primitives/github-source",
     "primitives/http-sink",
     "primitives/http-source",
-    "primitives/slack-sink",
-    "primitives/slack-source",
 ]
 
 [workspace.package]
@@ -38,8 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
-# GitHub
-octocrab = "0.42"
+# Crypto (HMAC signature verification)
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"

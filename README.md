@@ -4,15 +4,15 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 
 ## Available Primitives
 
-| Name | Kind | Description | Status |
-|------|------|-------------|--------|
-| [`http-source`](primitives/http-source/) | source | HTTP webhook receiver | ✅ Ready |
-| [`http-sink`](primitives/http-sink/) | sink | Outbound HTTP requests | ✅ Ready |
-| [`exec-source`](primitives/exec-source/) | source | Shell command executor | ✅ Ready |
-| `slack-source` | source | Monitor Slack channels | 🚧 Planned |
-| `slack-sink` | sink | Post to Slack channels | 🚧 Planned |
-| `github-source` | source | GitHub webhook receiver | 🚧 Planned |
-| `github-sink` | sink | GitHub API interactions | 🚧 Planned |
+| Name | Kind | Description |
+|------|------|-------------|
+| [`http-source`](primitives/http-source/) | source | HTTP webhook receiver |
+| [`http-sink`](primitives/http-sink/) | sink | Outbound HTTP requests |
+| [`exec-source`](primitives/exec-source/) | source | Shell command executor |
+| [`exec-handler`](primitives/exec-handler/) | handler | Pipe event payloads through any executable |
+| [`console-sink`](primitives/console-sink/) | sink | Output message payloads to stdout |
+
+The [topology-viewer](https://github.com/Govcraft/emergent) sink ships with the engine repository.
 
 ## Installation
 
@@ -20,7 +20,8 @@ Install via the Emergent marketplace CLI:
 
 ```bash
 emergent marketplace install http-source
-emergent marketplace install exec-source
+emergent marketplace install exec-handler
+emergent marketplace install console-sink
 ```
 
 Or download binaries directly from [GitHub Releases](https://github.com/Govcraft/emergent-primitives/releases).
@@ -84,6 +85,37 @@ exec-source --command date --interval 5000
 
 **Publishes:** `exec.output`, `exec.error`, `exec.exit`
 
+### exec-handler
+
+Subscribe to events, pipe payloads through an executable, and publish the results.
+
+```bash
+exec-handler --publish-as processed.result
+```
+
+**Arguments:**
+- `--publish-as`, `-p`: Message type for successful output (default: exec.output)
+- `--error-as`, `-e`: Message type for error output (default: exec.error)
+- `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+
+**Subscribes:** `*` (configurable via TOML)
+**Publishes:** `exec.output`, `exec.error`
+
+### console-sink
+
+Output message payloads to stdout.
+
+```bash
+console-sink --subscribe timer.tick --pretty --timestamp
+```
+
+**Arguments:**
+- `--subscribe`, `-s`: Message types to subscribe to (can be repeated)
+- `--pretty`, `-p`: Pretty-print JSON output (env: `CONSOLE_SINK_PRETTY`)
+- `--timestamp`, `-t`: Include timestamps (env: `CONSOLE_SINK_TIMESTAMP`)
+
+**Subscribes:** `*` (configurable via TOML or `--subscribe` flag)
+
 ## Development
 
 ### Prerequisites
@@ -113,12 +145,12 @@ cargo clippy --all-targets -- -D warnings
 
 Releases are automated via GitHub Actions. To create a new release:
 
-1. Tag the commit: `git tag v0.1.0`
-2. Push the tag: `git push origin v0.1.0`
+1. Tag the commit: `git tag v0.3.12`
+2. Push the tag: `git push origin v0.3.12`
 
 The workflow will:
-- Build for Linux (x86_64, aarch64), macOS (x86_64, aarch64), Windows (x86_64)
-- Create archives (tar.gz for Unix, zip for Windows)
+- Build for Linux (x86_64, aarch64), macOS (x86_64, aarch64)
+- Create archives (tar.gz)
 - Generate SHA256 checksums
 - Upload to GitHub Releases
 
