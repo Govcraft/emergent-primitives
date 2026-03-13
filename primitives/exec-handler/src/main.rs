@@ -72,10 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Resolve publish types: EMERGENT_PUBLISHES env > CLI args > defaults
-    let publish_types = exec_common::resolve_publish_types_from_env(&[
-        &args.publish_as,
-        &args.error_as,
-    ]);
+    let publish_types =
+        exec_common::resolve_publish_types_from_env(&[&args.publish_as, &args.error_as]);
     let publish_as = &publish_types[0];
     let error_as = &publish_types[1];
 
