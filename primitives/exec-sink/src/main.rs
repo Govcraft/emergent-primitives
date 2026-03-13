@@ -22,7 +22,7 @@
 
 use clap::Parser;
 use emergent_client::EmergentSink;
-use exec_common::{ExecError, execute_command};
+use exec_common::{ExecError, execute_command_passthrough};
 use tokio::signal::unix::{SignalKind, signal};
 
 /// Exec Sink — pipe event payloads through an executable.
@@ -88,10 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             msg = stream.next() => {
                 match msg {
                     Some(msg) => {
-                        if let Err(err) = execute_command(msg.payload(), &args.command, args.timeout).await {
+                        if let Err(err) = execute_command_passthrough(msg.payload(), &args.command, args.timeout).await {
                             let detail = match &err {
-                                ExecError::Failed { stderr, command, .. } => {
-                                    format!("{command}: {stderr}")
+                                ExecError::Failed { command, exit_code, .. } => {
+                                    format!("{command}: exit code {exit_code}")
                                 }
                                 ExecError::Timeout { command } => {
                                     format!("{command}: timed out")

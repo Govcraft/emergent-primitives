@@ -107,6 +107,68 @@ pub async fn execute_command(
     })
 }
 
+/// Execute a command with passthrough output (stdout/stderr go to the terminal).
+///
+/// Pipes the payload JSON to the command's stdin but lets stdout and stderr
+/// inherit the parent process's terminal. This is the right choice for sink
+/// primitives where the command's output IS the desired side effect (e.g.,
+/// `jq .` for pretty-printing, `tee` for logging).
+///
+/// Returns `Ok(())` on success (exit code 0) or an `ExecError` on failure.
+pub async fn execute_command_passthrough(
+    payload: &serde_json::Value,
+    command: &[String],
+    timeout_ms: u64,
+) -> Result<(), ExecError> {
+    let command_str = command.join(" ");
+
+    let mut child = Command::new(&command[0])
+        .args(&command[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| ExecError::SpawnFailed {
+            error: e.to_string(),
+            command: command_str.clone(),
+        })?;
+
+    // Write payload JSON to stdin, then close it.
+    let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(&payload_bytes).await
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(ExecError::StdinFailed {
+            error: e.to_string(),
+            command: command_str.clone(),
+        });
+    }
+
+    // Wait for the process with timeout
+    let status = tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait())
+        .await
+        .map_err(|_| ExecError::Timeout {
+            command: command_str.clone(),
+        })?
+        .map_err(|e| ExecError::SpawnFailed {
+            error: e.to_string(),
+            command: command_str.clone(),
+        })?;
+
+    let exit_code = status.code().unwrap_or(-1);
+
+    if exit_code != 0 {
+        return Err(ExecError::Failed {
+            exit_code,
+            stderr: String::new(),
+            command: command_str,
+        });
+    }
+
+    Ok(())
+}
+
 /// Build a JSON error payload from an `ExecError`.
 pub fn error_to_json(err: &ExecError) -> serde_json::Value {
     match err {
