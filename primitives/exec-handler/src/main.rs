@@ -118,12 +118,13 @@ async fn execute_command(
     // Write payload JSON to stdin, then close it
     let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&payload_bytes).await.map_err(|e| {
-            ExecError::StdinFailed {
+        stdin
+            .write_all(&payload_bytes)
+            .await
+            .map_err(|e| ExecError::StdinFailed {
                 error: e.to_string(),
                 command: command_str.clone(),
-            }
-        })?;
+            })?;
         // stdin is dropped here, closing the pipe
     }
 
@@ -329,9 +330,7 @@ mod tests {
         assert!(result.is_err());
 
         if let Err(ExecError::Failed {
-            exit_code,
-            command,
-            ..
+            exit_code, command, ..
         }) = result
         {
             assert_eq!(exit_code, 1);
@@ -363,7 +362,7 @@ mod tests {
         let command = vec![
             "sh".to_string(),
             "-c".to_string(),
-            r#"echo '{"ok":true}' && echo 'warning: something' >&2"#.to_string(),
+            r#"printf '{"ok":true}\n' && printf 'warning: something\n' >&2"#.to_string(),
         ];
 
         let result = execute_command(&payload, &command, 5000).await;
