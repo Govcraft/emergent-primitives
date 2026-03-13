@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "primitives/console-sink",
+    "primitives/exec-handler",
     "primitives/exec-source",
     "primitives/github-sink",
     "primitives/github-source",

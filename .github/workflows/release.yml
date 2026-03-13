@@ -17,6 +17,7 @@ jobs:
       matrix:
         primitive:
           - console-sink
+          - exec-handler
           - http-source
           - http-sink
           - exec-source

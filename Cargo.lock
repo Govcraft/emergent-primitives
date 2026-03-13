@@ -481,6 +481,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec-handler"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "emergent-client",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "exec-source"
 version = "0.1.0"
 dependencies = [
