@@ -451,7 +451,8 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "emergent-client"
 version = "0.8.1"
-source = "git+https://github.com/Govcraft/emergent#ebd8e39110373732ad65c904485a39b248037d8b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2d0f896bd77d9e01df64581dd3ee63a2c16330ff155f64cca90b843e180fe75"
 dependencies = [
  "acton-reactive",
  "futures",
