@@ -1,10 +1,9 @@
 #!/usr/bin/env -S deno run --allow-env --allow-read --allow-write --allow-net
 /**
- * SSE Sink — Push pipeline events to connected browsers via Server-Sent Events.
+ * SSE Sink — Push pipeline events to browsers via Server-Sent Events.
  *
  * Subscribes to configured message types and broadcasts each event to all
- * connected SSE clients. Any HTTP client that connects to the /events
- * endpoint receives a real-time stream of pipeline events as JSON.
+ * connected SSE clients on the /events endpoint.
  *
  * Usage:
  *   sse-sink --port 8080
@@ -16,7 +15,8 @@
  * @module
  */
 
-import { EmergentSink } from "jsr:@govcraft/emergent@0.10.0";
+import { runSink } from "jsr:@govcraft/emergent@0.10.0";
+import type { EmergentMessage } from "jsr:@govcraft/emergent@0.10.0";
 
 // ============================================================================
 // CLI
@@ -47,7 +47,14 @@ function parseArgs(): { port: number } {
 const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const encoder = new TextEncoder();
 
-function broadcast(data: string): void {
+function broadcast(msg: EmergentMessage): void {
+  const data = JSON.stringify({
+    id: msg.id,
+    type: msg.messageType,
+    source: msg.source,
+    timestamp: msg.timestampMs,
+    payload: msg.payload,
+  });
   const message = encoder.encode(`data: ${data}\n\n`);
   for (const controller of clients) {
     try {
@@ -96,59 +103,24 @@ function handleRequest(req: Request): Response {
 // ============================================================================
 
 const { port } = parseArgs();
-const name = Deno.env.get("EMERGENT_NAME") ?? "sse_sink";
 
-// Resolve subscribe types from EMERGENT_SUBSCRIBES or use defaults
+// Resolve subscribe types from EMERGENT_SUBSCRIBES env var
 let subscribeTypes: string[];
 try {
   const envSubs = Deno.env.get("EMERGENT_SUBSCRIBES");
-  if (envSubs) {
-    subscribeTypes = envSubs.split(",").map((t) => t.trim()).filter((t) =>
-      t.length > 0
-    );
-  } else {
-    subscribeTypes = ["*"];
-  }
+  subscribeTypes = envSubs
+    ? envSubs.split(",").map((t) => t.trim()).filter((t) => t.length > 0)
+    : ["*"];
 } catch {
   subscribeTypes = ["*"];
 }
 
-// Start HTTP server for SSE
-const server = Deno.serve({ port, handler: handleRequest });
+// Start SSE server
+Deno.serve({ port, handler: handleRequest });
 console.error(`[sse-sink] Listening on http://localhost:${port}/events`);
 
-// Connect to the engine
-const sink = await EmergentSink.connect(name);
-const stream = await sink.subscribe(subscribeTypes);
-
-// Graceful shutdown
-const shutdown = () => {
-  for (const controller of clients) {
-    try {
-      controller.close();
-    } catch {
-      // Client already disconnected
-    }
-  }
-  clients.clear();
-  stream.close();
-  server.shutdown();
-};
-
-Deno.addSignalListener("SIGTERM", shutdown);
-Deno.addSignalListener("SIGINT", shutdown);
-
-// Message loop — broadcast each event to all SSE clients
-for await (const msg of stream) {
-  const event = JSON.stringify({
-    id: msg.id,
-    type: msg.messageType,
-    source: msg.source,
-    timestamp: msg.timestampMs,
-    payload: msg.payload,
-  });
-  broadcast(event);
-}
-
-shutdown();
-sink.close();
+// Connect to engine and broadcast events
+await runSink(undefined, subscribeTypes, (msg) => {
+  broadcast(msg);
+  return Promise.resolve();
+});
