@@ -428,9 +428,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.10.0"
+version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "781bc448fa83349d12aea276f0d109a04f827c59c0e0dbb8f7f7854af3810bdf"
+checksum = "61e0ccc66f7a4f417336c0101ee8a60eb57a6866494de363fd87155450f68045"
 dependencies = [
  "acton-reactive",
  "directories",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "exec-common"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde_json",
  "tokio",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "exec-handler"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "emergent-client",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "exec-sink"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "emergent-client",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "exec-source"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "emergent-client",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "http-source"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "clap",
