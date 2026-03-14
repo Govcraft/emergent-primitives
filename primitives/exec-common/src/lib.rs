@@ -34,13 +34,13 @@ pub enum ExecError {
 
 /// Execute a command, piping the payload JSON to its stdin and capturing stdout.
 ///
-/// Returns the parsed stdout as a JSON value on success, or an error with
-/// exit code and stderr on failure.
+/// Returns the parsed stdout as a JSON value on success, `None` if the command
+/// produced no output (silent filter), or an error on failure.
 pub async fn execute_command(
     payload: &serde_json::Value,
     command: &[String],
     timeout_ms: u64,
-) -> Result<ExecResult, ExecError> {
+) -> Result<Option<ExecResult>, ExecError> {
     let command_str = command.join(" ");
 
     let mut child = Command::new(&command[0])
@@ -90,21 +90,24 @@ pub async fn execute_command(
         });
     }
 
-    // Parse stdout: try JSON first, fall back to wrapped string
-    let stdout_payload = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
-        let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        serde_json::json!({"output": stdout_str})
-    });
+    // Parse stdout: return None if empty, try JSON first, fall back to wrapped string
+    let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout_str.is_empty() {
+        return Ok(None);
+    }
+
+    let stdout_payload = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| serde_json::json!({"output": stdout_str}));
 
     let stderr = {
         let s = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if s.is_empty() { None } else { Some(s) }
     };
 
-    Ok(ExecResult {
+    Ok(Some(ExecResult {
         stdout_payload,
         stderr,
-    })
+    }))
 }
 
 /// Execute a command with passthrough output (stdout/stderr go to the terminal).
@@ -232,8 +235,10 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), r#"{"result":"world"}"#.to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
-        let result = result.unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(&payload, &command, 5000)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"))
+            .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"result": "world"}));
         assert!(result.stderr.is_none());
@@ -244,8 +249,10 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), "plain text output".to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
-        let result = result.unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(&payload, &command, 5000)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"))
+            .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(
             result.stdout_payload,
@@ -254,14 +261,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_empty_stdout_produces_empty_output() {
+    async fn test_empty_stdout_returns_none() {
         let payload = json!({"input": "hello"});
         let command = vec!["cat".to_string(), "/dev/null".to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
-        let result = result.unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(&payload, &command, 5000)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"));
 
-        assert_eq!(result.stdout_payload, json!({"output": ""}));
+        assert!(result.is_none(), "empty stdout should return None");
     }
 
     #[tokio::test]
@@ -307,8 +315,10 @@ mod tests {
             r#"printf '{"ok":true}\n' && printf 'warning: something\n' >&2"#.to_string(),
         ];
 
-        let result = execute_command(&payload, &command, 5000).await;
-        let result = result.unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(&payload, &command, 5000)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"))
+            .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"ok": true}));
         assert_eq!(result.stderr.as_deref(), Some("warning: something"));
@@ -334,8 +344,10 @@ mod tests {
         let payload = json!({"name": "emergent"});
         let command = vec!["cat".to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
-        let result = result.unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(&payload, &command, 5000)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"))
+            .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"name": "emergent"}));
     }

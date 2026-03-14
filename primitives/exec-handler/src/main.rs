@@ -34,7 +34,7 @@
 
 use clap::Parser;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use exec_common::{error_to_json, execute_command};
+use exec_common::{ExecError, error_to_json, execute_command};
 use serde_json::json;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match msg {
                     Some(msg) => {
                         match execute_command(msg.payload(), &args.command, args.timeout).await {
-                            Ok(result) => {
+                            Ok(Some(result)) => {
                                 let mut output = EmergentMessage::new(publish_as)
                                     .with_causation_id(msg.id())
                                     .with_payload(result.stdout_payload);
@@ -131,6 +131,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 let _ = handler.publish(output).await;
+                            }
+                            Ok(None) => {
+                                // Command produced no output — silent filter, skip publishing
+                            }
+                            Err(ExecError::Failed { ref stderr, .. }) if stderr.trim().is_empty() => {
+                                // Non-zero exit with no stderr — silent filter (e.g., jq select)
                             }
                             Err(exec_err) => {
                                 let error_msg = EmergentMessage::new(error_as)
