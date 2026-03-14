@@ -64,7 +64,7 @@ struct HttpRequestPayload {
     method: String,
     path: String,
     headers: HashMap<String, String>,
-    body: String,
+    body: serde_json::Value,
     remote_addr: Option<String>,
 }
 
@@ -120,15 +120,16 @@ async fn handle_request(
         })
         .collect();
 
-    // Convert body to string
-    let body_str = String::from_utf8_lossy(&body).to_string();
+    // Parse body: try JSON first, fall back to string value
+    let body_value = serde_json::from_slice(&body)
+        .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&body).to_string()));
 
     // Create payload
     let payload = HttpRequestPayload {
         method: method.to_string(),
         path: "/".to_string(), // Axum doesn't provide path in handler
         headers: headers_map,
-        body: body_str,
+        body: body_value,
         remote_addr: None,
     };
 
