@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the sink name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "exec_sink".to_string());
 
-    let sink = match EmergentSink::connect(&name).await {
+    let mut sink = match EmergentSink::connect(&name).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");
