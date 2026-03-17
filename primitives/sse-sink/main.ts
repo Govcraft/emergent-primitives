@@ -15,8 +15,8 @@
  * @module
  */
 
-import { runSink } from "jsr:@govcraft/emergent@0.12.0";
-import type { EmergentMessage } from "jsr:@govcraft/emergent@0.12.0";
+import { runSink } from "jsr:@govcraft/emergent@0.13.0";
+import type { EmergentMessage } from "jsr:@govcraft/emergent@0.13.0";
 
 // ============================================================================
 // CLI

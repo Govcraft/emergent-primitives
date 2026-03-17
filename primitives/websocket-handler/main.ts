@@ -25,7 +25,7 @@
  * @module
  */
 
-import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent@0.12.0";
+import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent@0.13.0";
 
 // ============================================================================
 // CLI Argument Parsing
