@@ -6,10 +6,11 @@ members = [
     "primitives/exec-sink",
     "primitives/exec-source",
     "primitives/http-source",
+    "primitives/stream-runner",
 ]
 
 [workspace.package]
-version = "0.7.2"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Govcraft/emergent-primitives"

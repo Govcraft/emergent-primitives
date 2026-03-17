@@ -10,6 +10,7 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 | [`exec-source`](primitives/exec-source/) | source | Execute shell commands and emit output as events |
 | [`exec-handler`](primitives/exec-handler/) | handler | Pipe event payloads through any executable and publish results |
 | [`exec-sink`](primitives/exec-sink/) | sink | Pipe event payloads through any executable (fire-and-forget) |
+| [`stream-runner`](primitives/stream-runner/) | handler | Emit a JSON collection one item at a time, waiting for downstream ack before advancing |
 
 The exec trio covers most use cases without writing code:
 

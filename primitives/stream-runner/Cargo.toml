@@ -1,0 +1,22 @@
+[package]
+name = "stream-runner"
+description = "Flow-control Handler that emits a JSON collection one item at a time, waiting for a downstream ack before advancing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "stream-runner"
+path = "src/main.rs"
+
+[dependencies]
+emergent-client.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
