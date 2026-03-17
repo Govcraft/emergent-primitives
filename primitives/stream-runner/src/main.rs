@@ -37,7 +37,9 @@ use tokio::signal::unix::{SignalKind, signal};
 /// Stream Runner — emit collection items one at a time, waiting for downstream ack before advancing.
 #[derive(Parser, Debug)]
 #[command(name = "stream-runner")]
-#[command(about = "Emit collection items one at a time, waiting for downstream ack before advancing")]
+#[command(
+    about = "Emit collection items one at a time, waiting for downstream ack before advancing"
+)]
 struct Args {
     /// Event carrying the JSON collection to stream
     #[arg(long, default_value = "stream.load")]
