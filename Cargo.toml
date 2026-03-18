@@ -10,14 +10,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Govcraft/emergent-primitives"
 
 [workspace.dependencies]
 # Core
-emergent-client = "0.13.0"
+emergent-client = "0.13.1"
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1", features = ["derive"] }
