@@ -2,11 +2,97 @@
 //!
 //! Provides:
 //! - `execute_command` / `execute_command_passthrough` — pipe JSON to stdin
+//! - `MessageEnv` — expose envelope fields to the executed command
 //! - `resolve_publish_types_from_env` — read `EMERGENT_PUBLISHES` env var
 
+use emergent_client::EmergentMessage;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+/// Envelope fields exported to an executed command's environment.
+///
+/// Exec primitives pipe only the message *payload* to a command's stdin, so the
+/// envelope — message id, correlation, causation — is otherwise invisible to a
+/// jq filter or shell step. Exporting it as environment variables lets a
+/// zero-code pipeline read the same tracing identifiers the event store records,
+/// without smuggling them through the payload.
+///
+/// | Variable | Source |
+/// |----------|--------|
+/// | `EMERGENT_MESSAGE_ID` | `message.id` |
+/// | `EMERGENT_MESSAGE_TYPE` | `message.message_type` |
+/// | `EMERGENT_MESSAGE_SOURCE` | `message.source` |
+/// | `EMERGENT_CORRELATION_ID` | `message.correlation_id` |
+/// | `EMERGENT_CAUSATION_ID` | `message.causation_id` |
+#[derive(Debug, Default, Clone)]
+pub struct MessageEnv {
+    /// Value for `EMERGENT_MESSAGE_ID`.
+    pub message_id: Option<String>,
+    /// Value for `EMERGENT_MESSAGE_TYPE`.
+    pub message_type: Option<String>,
+    /// Value for `EMERGENT_MESSAGE_SOURCE`.
+    pub message_source: Option<String>,
+    /// Value for `EMERGENT_CORRELATION_ID`.
+    pub correlation_id: Option<String>,
+    /// Value for `EMERGENT_CAUSATION_ID`.
+    pub causation_id: Option<String>,
+}
+
+impl MessageEnv {
+    /// Build the environment for a command triggered by `message`.
+    #[must_use]
+    pub fn from_message(message: &EmergentMessage) -> Self {
+        Self {
+            message_id: Some(message.id.to_string()),
+            message_type: Some(message.message_type.to_string()),
+            message_source: Some(message.source.to_string()),
+            correlation_id: message.correlation_id.as_ref().map(ToString::to_string),
+            causation_id: message.causation_id.as_ref().map(ToString::to_string),
+        }
+    }
+
+    /// Build an environment carrying only a correlation id.
+    ///
+    /// Sources have no triggering message; the correlation they stamp on what
+    /// they publish is the only envelope field they can offer the command.
+    #[must_use]
+    pub fn with_correlation(correlation_id: Option<String>) -> Self {
+        Self {
+            correlation_id,
+            ..Self::default()
+        }
+    }
+
+    /// The variable names and values this environment resolves to.
+    ///
+    /// A `None` value means the variable is cleared, not left untouched.
+    #[must_use]
+    pub fn vars(&self) -> [(&'static str, Option<&String>); 5] {
+        [
+            ("EMERGENT_MESSAGE_ID", self.message_id.as_ref()),
+            ("EMERGENT_MESSAGE_TYPE", self.message_type.as_ref()),
+            ("EMERGENT_MESSAGE_SOURCE", self.message_source.as_ref()),
+            ("EMERGENT_CORRELATION_ID", self.correlation_id.as_ref()),
+            ("EMERGENT_CAUSATION_ID", self.causation_id.as_ref()),
+        ]
+    }
+
+    /// Apply the variables to a command.
+    ///
+    /// Absent fields are *removed* rather than skipped. The engine forwards its
+    /// own environment to every primitive, which forwards it again to the
+    /// command — so an ambient `EMERGENT_CORRELATION_ID` would otherwise leak
+    /// into a command handling an uncorrelated message and mislabel its output.
+    pub fn apply_to(&self, cmd: &mut Command) {
+        for (key, value) in self.vars() {
+            match value {
+                Some(value) => cmd.env(key, value),
+                None => cmd.env_remove(key),
+            };
+        }
+    }
+}
 
 /// Result of a successful command execution.
 pub struct ExecResult {
@@ -40,19 +126,22 @@ pub async fn execute_command(
     payload: &serde_json::Value,
     command: &[String],
     timeout_ms: u64,
+    message_env: &MessageEnv,
 ) -> Result<Option<ExecResult>, ExecError> {
     let command_str = command.join(" ");
 
-    let mut child = Command::new(&command[0])
+    let mut builder = Command::new(&command[0]);
+    builder
         .args(&command[1..])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| ExecError::SpawnFailed {
-            error: e.to_string(),
-            command: command_str.clone(),
-        })?;
+        .stderr(std::process::Stdio::piped());
+    message_env.apply_to(&mut builder);
+
+    let mut child = builder.spawn().map_err(|e| ExecError::SpawnFailed {
+        error: e.to_string(),
+        command: command_str.clone(),
+    })?;
 
     // Write payload JSON to stdin, then close it.
     // Ignore broken pipe errors — the command may not read stdin.
@@ -122,19 +211,22 @@ pub async fn execute_command_passthrough(
     payload: &serde_json::Value,
     command: &[String],
     timeout_ms: u64,
+    message_env: &MessageEnv,
 ) -> Result<(), ExecError> {
     let command_str = command.join(" ");
 
-    let mut child = Command::new(&command[0])
+    let mut builder = Command::new(&command[0]);
+    builder
         .args(&command[1..])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| ExecError::SpawnFailed {
-            error: e.to_string(),
-            command: command_str.clone(),
-        })?;
+        .stderr(std::process::Stdio::inherit());
+    message_env.apply_to(&mut builder);
+
+    let mut child = builder.spawn().map_err(|e| ExecError::SpawnFailed {
+        error: e.to_string(),
+        command: command_str.clone(),
+    })?;
 
     // Write payload JSON to stdin, then close it.
     let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
@@ -235,7 +327,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), r#"{"result":"world"}"#.to_string()];
 
-        let result = execute_command(&payload, &command, 5000)
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
             .await
             .unwrap_or_else(|_| panic!("expected success"))
             .unwrap_or_else(|| panic!("expected Some"));
@@ -249,7 +341,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), "plain text output".to_string()];
 
-        let result = execute_command(&payload, &command, 5000)
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
             .await
             .unwrap_or_else(|_| panic!("expected success"))
             .unwrap_or_else(|| panic!("expected Some"));
@@ -265,7 +357,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["cat".to_string(), "/dev/null".to_string()];
 
-        let result = execute_command(&payload, &command, 5000)
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
             .await
             .unwrap_or_else(|_| panic!("expected success"));
 
@@ -277,7 +369,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["false".to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default()).await;
         assert!(result.is_err());
 
         if let Err(ExecError::Failed {
@@ -296,7 +388,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["sleep".to_string(), "10".to_string()];
 
-        let result = execute_command(&payload, &command, 100).await;
+        let result = execute_command(&payload, &command, 100, &MessageEnv::default()).await;
         assert!(result.is_err());
 
         if let Err(ExecError::Timeout { command }) = result {
@@ -315,7 +407,7 @@ mod tests {
             r#"printf '{"ok":true}\n' && printf 'warning: something\n' >&2"#.to_string(),
         ];
 
-        let result = execute_command(&payload, &command, 5000)
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
             .await
             .unwrap_or_else(|_| panic!("expected success"))
             .unwrap_or_else(|| panic!("expected Some"));
@@ -329,7 +421,7 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["nonexistent_command_that_should_not_exist".to_string()];
 
-        let result = execute_command(&payload, &command, 5000).await;
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default()).await;
         assert!(result.is_err());
 
         if let Err(ExecError::SpawnFailed { command, .. }) = result {
@@ -344,7 +436,7 @@ mod tests {
         let payload = json!({"name": "emergent"});
         let command = vec!["cat".to_string()];
 
-        let result = execute_command(&payload, &command, 5000)
+        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
             .await
             .unwrap_or_else(|_| panic!("expected success"))
             .unwrap_or_else(|| panic!("expected Some"));
@@ -363,6 +455,64 @@ mod tests {
         assert_eq!(json["exit_code"], 1);
         assert_eq!(json["stderr"], "bad input");
         assert_eq!(json["command"], "my-cmd");
+    }
+
+    #[tokio::test]
+    async fn test_message_env_is_exported_to_command() {
+        let payload = json!({});
+        let command = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"jq -nc --arg c "$EMERGENT_CORRELATION_ID" --arg m "$EMERGENT_MESSAGE_ID" '{c: $c, m: $m}'"#
+                .to_string(),
+        ];
+        let message_env = MessageEnv {
+            message_id: Some("msg_01h455vb4pex5vsknk084sn02q".to_string()),
+            correlation_id: Some("cor_01h455vb4pex5vsknk084sn02q".to_string()),
+            ..MessageEnv::default()
+        };
+
+        let result = execute_command(&payload, &command, 5000, &message_env)
+            .await
+            .unwrap_or_else(|_| panic!("expected success"))
+            .unwrap_or_else(|| panic!("expected Some"));
+
+        assert_eq!(
+            result.stdout_payload,
+            json!({
+                "c": "cor_01h455vb4pex5vsknk084sn02q",
+                "m": "msg_01h455vb4pex5vsknk084sn02q",
+            })
+        );
+    }
+
+    #[test]
+    fn test_absent_message_env_fields_are_marked_for_removal() {
+        // The engine forwards its own environment to every primitive, which
+        // forwards it again to the command. An absent field must resolve to
+        // None so `apply` removes it, rather than letting an ambient value leak
+        // into a command handling an uncorrelated message.
+        let message_env = MessageEnv::default();
+        let vars = message_env.vars();
+
+        assert_eq!(vars.len(), 5);
+        assert!(
+            vars.iter().all(|(_, value)| value.is_none()),
+            "default MessageEnv must clear every variable"
+        );
+    }
+
+    #[test]
+    fn test_message_env_vars_cover_the_documented_names() {
+        let message_env = MessageEnv::with_correlation(Some("cor_x".to_string()));
+        let named: Vec<&str> = message_env
+            .vars()
+            .iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(key, _)| *key)
+            .collect();
+
+        assert_eq!(named, vec!["EMERGENT_CORRELATION_ID"]);
     }
 
     #[tokio::test]

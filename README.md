@@ -71,8 +71,24 @@ exec-source --command date --interval 5000
 - `--interval`, `-i`: Repeat interval in milliseconds
 - `--working-dir`, `-w`: Working directory
 - `--shell`, `-s`: Shell to use (default: sh)
+- `--correlate`: Mint one correlation ID at startup and stamp it on every published message
+- `--correlation-id`: Adopt an existing `cor_<uuid_v7>` instead of minting one (env: `EMERGENT_CORRELATION_ID`)
 
 **Publishes:** `exec.output`, `exec.error`, `exec.exit`
+
+A source is where a trail begins. `--correlate` stamps one correlation ID on
+everything the source publishes; every downstream `exec-handler` carries it
+forward, so the whole flow is one query against the event store's
+`correlation_id` column. `--correlation-id` adopts an ID minted elsewhere —
+this is how a run that spans more than one engine stays a single trail.
+
+The command reads the same value from `EMERGENT_CORRELATION_ID`, so a shell
+step can record the ID the event store will key on:
+
+```bash
+exec-source --correlate --shell sh \
+  --command 'echo "{\"run\":\"$EMERGENT_CORRELATION_ID\"}" | tee run.json'
+```
 
 ### exec-handler
 
@@ -91,6 +107,10 @@ exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 
 **Subscribes:** configurable via `--subscribe`
 **Publishes:** `exec.output`, `exec.error` (configurable)
+
+Published messages inherit the inbound message's `correlation_id` — a
+transformation belongs to the same logical request as its input — alongside the
+`causation_id` that links it to the specific message it came from.
 
 ### exec-sink
 
@@ -114,9 +134,33 @@ exec-sink -s user.created -- ./scripts/send-welcome-email.sh
 
 **Subscribes:** configurable via `--subscribe`
 
+## Envelope Variables
+
+Exec primitives pipe only the message *payload* to a command's stdin, so the
+envelope is invisible to a jq filter or shell step. It arrives in the command's
+environment instead:
+
+| Variable | Source |
+|----------|--------|
+| `EMERGENT_MESSAGE_ID` | `message.id` |
+| `EMERGENT_MESSAGE_TYPE` | `message.message_type` |
+| `EMERGENT_MESSAGE_SOURCE` | `message.source` |
+| `EMERGENT_CORRELATION_ID` | `message.correlation_id` |
+| `EMERGENT_CAUSATION_ID` | `message.causation_id` |
+
+`exec-handler` and `exec-sink` set all five from the message being handled;
+`exec-source` sets `EMERGENT_CORRELATION_ID` alone, since it has no inbound
+message. A field the message does not carry is **removed** from the command's
+environment rather than left alone — the engine forwards its own environment
+down to every command, so an ambient value would otherwise leak in and mislabel
+the output.
+
+This is what makes tracing identifiers usable from a zero-code pipeline without
+smuggling them through the payload.
+
 ## Shared Code
 
-The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, timeout handling, JSON output parsing, and structured error types.
+The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, timeout handling, JSON output parsing, structured error types, and the `MessageEnv` envelope-to-environment mapping.
 
 ## Development
 

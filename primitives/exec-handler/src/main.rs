@@ -14,6 +14,17 @@
 //! 4. Capture stdout and publish as a new event
 //! 5. On failure, publish an error event
 //!
+//! # Tracing
+//!
+//! Published messages inherit the inbound message's `correlation_id`: a
+//! transformation belongs to the same logical request as its input, so a
+//! correlation seeded at the pipeline's ingress survives every hop without
+//! being carried in the payload.
+//!
+//! The command itself receives the envelope through its environment
+//! (`EMERGENT_MESSAGE_ID`, `EMERGENT_CORRELATION_ID`, ...) — only the payload
+//! reaches stdin, so this is how a jq or shell step reads tracing identifiers.
+//!
 //! # Messages Published
 //!
 //! - Configurable success type (default: `exec.output`) — stdout from the command
@@ -34,7 +45,7 @@
 
 use clap::Parser;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use exec_common::{ExecError, error_to_json, execute_command};
+use exec_common::{ExecError, MessageEnv, error_to_json, execute_command};
 use serde_json::json;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -120,10 +131,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             msg = stream.next() => {
                 match msg {
                     Some(msg) => {
-                        match execute_command(msg.payload(), &args.command, args.timeout).await {
+                        let message_env = MessageEnv::from_message(&msg);
+
+                        match execute_command(
+                            msg.payload(),
+                            &args.command,
+                            args.timeout,
+                            &message_env,
+                        )
+                        .await
+                        {
                             Ok(Some(result)) => {
                                 let mut output = EmergentMessage::new(publish_as)
                                     .with_causation_id(msg.id())
+                                    .with_correlation_id_option(msg.correlation_id.as_ref())
                                     .with_payload(result.stdout_payload);
 
                                 if let Some(stderr) = result.stderr {
@@ -141,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(exec_err) => {
                                 let error_msg = EmergentMessage::new(error_as)
                                     .with_causation_id(msg.id())
+                                    .with_correlation_id_option(msg.correlation_id.as_ref())
                                     .with_payload(error_to_json(&exec_err));
 
                                 let _ = handler.publish(error_msg).await;

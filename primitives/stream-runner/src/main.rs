@@ -29,7 +29,7 @@
 //! ```
 
 use clap::Parser;
-use emergent_client::types::CausationId;
+use emergent_client::types::{CausationId, CorrelationId};
 use emergent_client::{EmergentHandler, EmergentMessage};
 use serde_json::{Value, json};
 use tokio::signal::unix::{SignalKind, signal};
@@ -68,6 +68,10 @@ enum State {
         items: Vec<Value>,
         next_index: usize,
         causation_id: CausationId,
+        /// The load message's correlation, replayed onto every item and the end
+        /// event. Acks are separate messages and cannot be trusted to carry it,
+        /// so the run's identity is held here for the length of the stream.
+        correlation_id: Option<CorrelationId>,
     },
 }
 
@@ -184,10 +188,12 @@ async fn handle_load(
     };
 
     let causation_id = CausationId::from(msg.id());
+    let correlation_id = msg.correlation_id.clone();
 
     if items.is_empty() {
         let end_msg = EmergentMessage::new(end_topic)
             .with_causation_id(causation_id)
+            .with_correlation_id_option(correlation_id.as_ref())
             .with_payload(json!({"count": 0}));
         if let Err(e) = handler.publish(end_msg).await {
             tracing::warn!("Failed to publish end event for empty collection: {e}");
@@ -196,12 +202,20 @@ async fn handle_load(
     }
 
     let first_item = items[0].clone();
+    emit_current(
+        &first_item,
+        &causation_id,
+        correlation_id.as_ref(),
+        handler,
+        publish_as,
+    )
+    .await;
     *state = State::Streaming {
         items,
         next_index: 0,
-        causation_id: causation_id.clone(),
+        causation_id,
+        correlation_id,
     };
-    emit_current(&first_item, &causation_id, handler, publish_as).await;
 }
 
 async fn handle_ack(
@@ -219,25 +233,34 @@ async fn handle_ack(
             items,
             next_index,
             causation_id,
+            correlation_id,
         } => {
             *next_index += 1;
             if *next_index < items.len() {
                 (
-                    Some((items[*next_index].clone(), causation_id.clone())),
+                    Some((
+                        items[*next_index].clone(),
+                        causation_id.clone(),
+                        correlation_id.clone(),
+                    )),
                     None,
                 )
             } else {
-                (None, Some((items.len(), causation_id.clone())))
+                (
+                    None,
+                    Some((items.len(), causation_id.clone(), correlation_id.clone())),
+                )
             }
         }
     };
 
-    if let Some((item, cid)) = emit_item {
-        emit_current(&item, &cid, handler, publish_as).await;
-    } else if let Some((count, cid)) = end_info {
+    if let Some((item, cid, corr)) = emit_item {
+        emit_current(&item, &cid, corr.as_ref(), handler, publish_as).await;
+    } else if let Some((count, cid, corr)) = end_info {
         *state = State::Idle;
         let end_msg = EmergentMessage::new(end_topic)
             .with_causation_id(cid)
+            .with_correlation_id_option(corr.as_ref())
             .with_payload(json!({"count": count}));
         if let Err(e) = handler.publish(end_msg).await {
             tracing::warn!("Failed to publish end event: {e}");
@@ -249,11 +272,13 @@ async fn handle_ack(
 async fn emit_current(
     item: &Value,
     causation_id: &CausationId,
+    correlation_id: Option<&CorrelationId>,
     handler: &EmergentHandler,
     publish_as: &str,
 ) {
     let msg = EmergentMessage::new(publish_as)
         .with_causation_id(causation_id.clone())
+        .with_correlation_id_option(correlation_id)
         .with_payload(item.clone());
     if let Err(e) = handler.publish(msg).await {
         tracing::warn!("Failed to publish stream item: {e}");
