@@ -143,10 +143,7 @@ enum Outcome {
 /// silent only when the operator listed the code in `--silent-exit-codes`
 /// and the command wrote nothing to stderr; every other failure publishes an
 /// error event so it cannot vanish without a trace.
-fn classify(
-    result: Result<Option<ExecResult>, ExecError>,
-    silent_exit_codes: &[i32],
-) -> Outcome {
+fn classify(result: Result<Option<ExecResult>, ExecError>, silent_exit_codes: &[i32]) -> Outcome {
     match result {
         Ok(Some(result)) => Outcome::Publish(result),
         Ok(None) => Outcome::Drop,
@@ -354,7 +351,10 @@ mod tests {
     #[test]
     fn listed_exit_code_with_stderr_is_an_error() {
         // stderr content is diagnostic output, not a filter decision.
-        assert!(matches!(classify(failed(1, "boom"), &[1]), Outcome::Error(_)));
+        assert!(matches!(
+            classify(failed(1, "boom"), &[1]),
+            Outcome::Error(_)
+        ));
     }
 
     #[test]
