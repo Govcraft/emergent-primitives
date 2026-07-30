@@ -103,6 +103,8 @@ exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 - `--publish-as`: Message type for successful output (default: `exec.output`)
 - `--error-as`, `-e`: Message type for error output (default: `exec.error`)
 - `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `--max-concurrent`: Maximum commands running at once (default: 1)
+- `--silent-exit-codes`: Exit codes treated as a silent filter when stderr is empty (comma-separated, default: none)
 - `-- <command> [args...]`: The command to execute
 
 **Subscribes:** configurable via `--subscribe`
@@ -111,6 +113,31 @@ exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 Published messages inherit the inbound message's `correlation_id` — a
 transformation belongs to the same logical request as its input — alongside the
 `causation_id` that links it to the specific message it came from.
+
+At `--max-concurrent 1` (the default) messages are processed serially in
+arrival order. Above 1, up to N commands run simultaneously — the right choice
+for slow, IO-bound steps like an LLM call:
+
+```bash
+exec-handler -s slack.prompt --timeout 60000 --max-concurrent 4 -- claude -p "Answer this"
+```
+
+Outputs are then published as executions complete, not in arrival order; the
+causation and correlation stamps keep interleaved trails intact. The
+subscription stream is only pulled when a slot is free, so queued bursts
+backpressure the engine rather than spawning unbounded processes, and in-flight
+executions finish and publish before shutdown.
+
+Every failure — non-zero exit, timeout, spawn failure — publishes an error
+event. To use exit-code filtering (e.g. `jq -e 'select(...)'`, which drops a
+message by exiting 1 with no stderr), list the filtering exit codes explicitly:
+
+```bash
+exec-handler -s log.line --silent-exit-codes 1 -- jq -e 'select(.level == "error")'
+```
+
+A listed exit code is silent only when stderr is empty; a command that writes
+diagnostics before failing still publishes an error event.
 
 ### exec-sink
 
@@ -130,9 +157,23 @@ exec-sink -s user.created -- ./scripts/send-welcome-email.sh
 **Arguments:**
 - `--subscribe`, `-s`: Message types to subscribe to (required, repeatable)
 - `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `--max-concurrent`: Maximum commands running at once (default: 1)
+- `--silent-exit-codes`: Exit codes not reported as failures (comma-separated, default: none)
 - `-- <command> [args...]`: The command to execute
 
 **Subscribes:** configurable via `--subscribe`
+
+Concurrency works as in exec-handler: serial in arrival order at the default
+of 1, up to N simultaneous commands above that, with backpressure on the
+subscription stream and a full drain of in-flight commands before shutdown.
+
+Sinks cannot publish, so failures are reported on stderr (captured in the
+engine's primitive logs) tagged with the causing message ID. Exit codes listed
+in `--silent-exit-codes` are not reported — for commands that use a non-zero
+exit to mean something other than failure, e.g.
+`--silent-exit-codes 1 -- grep -q ERROR`. Unlike exec-handler there is no
+empty-stderr condition: the sink hands stderr through to the terminal rather
+than capturing it. Timeouts and spawn failures are always reported.
 
 ## Envelope Variables
 
