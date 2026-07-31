@@ -194,7 +194,7 @@ async fn run_and_publish(msg: EmergentMessage, ctx: &ExecContext) {
             let error_msg = EmergentMessage::new(&ctx.error_as)
                 .with_causation_id(msg.id())
                 .with_correlation_id_option(msg.correlation_id.as_ref())
-                .with_payload(error_to_json(&exec_err));
+                .with_payload(error_to_json(&exec_err, msg.payload()));
 
             if let Err(e) = ctx.handler.publish(error_msg).await {
                 eprintln!("failed to publish error caused by {}: {e}", msg.id());

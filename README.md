@@ -139,6 +139,25 @@ exec-handler -s log.line --silent-exit-codes 1 -- jq -e 'select(.level == "error
 A listed exit code is silent only when stderr is empty; a command that writes
 diagnostics before failing still publishes an error event.
 
+Error events carry the inbound payload, so a failure can still be attributed to
+the work that caused it. The failure details go under a reserved `error` key and
+the inbound fields sit alongside them:
+
+```json
+{"issue": 42, "workspace": "wt-7", "error": {"exit_code": 1, "stderr": "...", "command": "..."}}
+```
+
+A downstream handler joining on `.issue` matches failure events the same way it
+matches successful ones. A payload that is not a JSON object has nothing to
+merge into, so it is carried under `input` instead; an inbound `error` key is
+overwritten by the reserved one.
+
+A timed-out command is terminated, not merely abandoned. Each command runs in
+its own process group, so the timeout reclaims anything the command started —
+the shell *and* the work it spawned. Termination is `SIGTERM`, then `SIGKILL`
+five seconds later, giving a command holding real state the chance to finish a
+write without letting one that ignores signals run forever.
+
 ### exec-sink
 
 Subscribe to events and pipe payloads through an executable. Output is discarded (fire-and-forget).
@@ -175,6 +194,10 @@ exit to mean something other than failure, e.g.
 empty-stderr condition: the sink hands stderr through to the terminal rather
 than capturing it. Timeouts and spawn failures are always reported.
 
+Timeouts terminate the command's process group as in exec-handler, so a
+fire-and-forget command that outlives its timeout is stopped rather than left
+running unsupervised.
+
 ## Envelope Variables
 
 Exec primitives pipe only the message *payload* to a command's stdin, so the
@@ -201,7 +224,7 @@ smuggling them through the payload.
 
 ## Shared Code
 
-The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, timeout handling, JSON output parsing, structured error types, and the `MessageEnv` envelope-to-environment mapping.
+The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, process-group isolation and timeout termination, JSON output parsing, identity-preserving error payloads, and the `MessageEnv` envelope-to-environment mapping.
 
 ## Development
 
