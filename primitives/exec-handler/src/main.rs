@@ -75,7 +75,9 @@ use std::sync::Arc;
 
 use clap::Parser;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use exec_common::{ExecError, ExecResult, MessageEnv, error_to_json, execute_command};
+use exec_common::{
+    ExecError, ExecResult, ExecTimeouts, MessageEnv, error_to_json, execute_command,
+};
 use serde_json::json;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::Semaphore;
@@ -104,6 +106,14 @@ struct Args {
     /// Per-execution timeout in milliseconds.
     #[arg(short, long, default_value = "30000")]
     timeout: u64,
+
+    /// Milliseconds a timed-out command may keep running after SIGTERM.
+    ///
+    /// A timeout terminates the command's whole process group. Raise this for
+    /// commands that hold state worth flushing — a checked-out worktree, a
+    /// half-written file — and lower it for work not worth waiting on.
+    #[arg(long, default_value_t = exec_common::DEFAULT_KILL_GRACE_MS)]
+    kill_grace_ms: u64,
 
     /// Maximum number of commands running at once.
     ///
@@ -159,7 +169,7 @@ fn classify(result: Result<Option<ExecResult>, ExecError>, silent_exit_codes: &[
 /// Everything an execution task needs, shared across concurrent tasks.
 struct ExecContext {
     command: Vec<String>,
-    timeout: u64,
+    timeouts: ExecTimeouts,
     publish_as: String,
     error_as: String,
     silent_exit_codes: Vec<i32>,
@@ -170,7 +180,7 @@ struct ExecContext {
 async fn run_and_publish(msg: EmergentMessage, ctx: &ExecContext) {
     let message_env = MessageEnv::from_message(&msg);
 
-    let result = execute_command(msg.payload(), &ctx.command, ctx.timeout, &message_env).await;
+    let result = execute_command(msg.payload(), &ctx.command, ctx.timeouts, &message_env).await;
 
     match classify(result, &ctx.silent_exit_codes) {
         Outcome::Publish(result) => {
@@ -243,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = Arc::new(handler);
     let ctx = Arc::new(ExecContext {
         command: args.command,
-        timeout: args.timeout,
+        timeouts: ExecTimeouts::new(args.timeout).with_kill_grace(args.kill_grace_ms),
         publish_as: publish_types[0].clone(),
         error_as: publish_types[1].clone(),
         silent_exit_codes: args.silent_exit_codes,

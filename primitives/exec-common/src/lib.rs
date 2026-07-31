@@ -10,12 +10,66 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-/// How long a timed-out process group may run after `SIGTERM` before `SIGKILL`.
+/// Default milliseconds a timed-out process group may run after `SIGTERM`.
+pub const DEFAULT_KILL_GRACE_MS: u64 = 5_000;
+
+/// Default milliseconds a command may run before it is timed out.
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// How long an execution may run, and how long it may take to die.
 ///
-/// A command that holds real state — a checked-out worktree, a half-written
-/// file — deserves the chance to finish that write. A command that ignores
-/// `SIGTERM` does not deserve to be waited for indefinitely.
-const TERM_GRACE: Duration = Duration::from_secs(5);
+/// The two are kept together because they are only meaningful as a pair, and
+/// because two bare `u64` arguments in a row are trivially swapped at a call
+/// site with no type error to catch it.
+#[derive(Debug, Clone, Copy)]
+pub struct ExecTimeouts {
+    /// Milliseconds before the command is considered timed out.
+    pub timeout_ms: u64,
+    /// Milliseconds a timed-out process group may run after `SIGTERM` before
+    /// `SIGKILL`.
+    ///
+    /// A command that holds real state — a checked-out worktree, a half-written
+    /// file — deserves the chance to finish that write. A command that ignores
+    /// `SIGTERM` does not deserve to be waited for indefinitely.
+    pub kill_grace_ms: u64,
+}
+
+impl Default for ExecTimeouts {
+    fn default() -> Self {
+        Self {
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            kill_grace_ms: DEFAULT_KILL_GRACE_MS,
+        }
+    }
+}
+
+impl ExecTimeouts {
+    /// Time out after `timeout_ms`, with the default kill grace.
+    #[must_use]
+    pub fn new(timeout_ms: u64) -> Self {
+        Self {
+            timeout_ms,
+            ..Self::default()
+        }
+    }
+
+    /// Set how long the process group may take to die after `SIGTERM`.
+    #[must_use]
+    pub fn with_kill_grace(self, kill_grace_ms: u64) -> Self {
+        Self {
+            kill_grace_ms,
+            ..self
+        }
+    }
+
+    fn timeout(self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
+
+    fn kill_grace(self) -> Duration {
+        Duration::from_millis(self.kill_grace_ms)
+    }
+}
 
 /// Envelope fields exported to an executed command's environment.
 ///
@@ -144,11 +198,11 @@ fn isolate_process_group(builder: &mut Command) {
 
 /// Terminate a running child and everything it started.
 ///
-/// Sends `SIGTERM` to the child's process group, waits up to [`TERM_GRACE`] for
-/// it to exit, then sends `SIGKILL`. Reaps the child either way, so the caller
-/// leaves no zombie behind.
+/// Sends `SIGTERM` to the child's process group, waits up to `grace` for it to
+/// exit, then sends `SIGKILL`. Reaps the child either way, so the caller leaves
+/// no zombie behind.
 #[cfg(unix)]
-async fn terminate_tree(child: &mut Child) {
+async fn terminate_tree(child: &mut Child, grace: Duration) {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
@@ -161,7 +215,7 @@ async fn terminate_tree(child: &mut Child) {
     // id equals its pid and this reaches every descendant that stayed in it.
     let _ = killpg(pgid, Signal::SIGTERM);
 
-    if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok() {
+    if tokio::time::timeout(grace, child.wait()).await.is_ok() {
         return;
     }
 
@@ -174,7 +228,7 @@ async fn terminate_tree(child: &mut Child) {
 /// Without process groups only the direct child can be reclaimed; a command
 /// that spawned its own children may still leave them behind.
 #[cfg(not(unix))]
-async fn terminate_tree(child: &mut Child) {
+async fn terminate_tree(child: &mut Child, _grace: Duration) {
     let _ = child.kill().await;
 }
 
@@ -195,12 +249,13 @@ async fn drain<R: AsyncReadExt + Unpin>(pipe: &mut Option<R>, buf: &mut Vec<u8>)
 /// produced no output (silent filter), or an error on failure.
 ///
 /// The command runs in its own process group. On timeout that group is
-/// terminated — `SIGTERM`, then `SIGKILL` after [`TERM_GRACE`] — so a timed-out
-/// execution stops running rather than merely stopping being waited on.
+/// terminated — `SIGTERM`, then `SIGKILL` after
+/// [`kill_grace_ms`](ExecTimeouts::kill_grace_ms) — so a timed-out execution
+/// stops running rather than merely stopping being waited on.
 pub async fn execute_command(
     payload: &serde_json::Value,
     command: &[String],
-    timeout_ms: u64,
+    timeouts: ExecTimeouts,
     message_env: &MessageEnv,
 ) -> Result<Option<ExecResult>, ExecError> {
     let command_str = command.join(" ");
@@ -244,7 +299,7 @@ pub async fn execute_command(
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
 
-    let waited = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+    let waited = tokio::time::timeout(timeouts.timeout(), async {
         let (status, (), ()) = tokio::join!(
             child.wait(),
             drain(&mut stdout_pipe, &mut stdout_buf),
@@ -255,7 +310,7 @@ pub async fn execute_command(
     .await;
 
     let Ok(status) = waited else {
-        terminate_tree(&mut child).await;
+        terminate_tree(&mut child, timeouts.kill_grace()).await;
         return Err(ExecError::Timeout {
             command: command_str,
         });
@@ -311,7 +366,7 @@ pub async fn execute_command(
 pub async fn execute_command_passthrough(
     payload: &serde_json::Value,
     command: &[String],
-    timeout_ms: u64,
+    timeouts: ExecTimeouts,
     message_env: &MessageEnv,
 ) -> Result<(), ExecError> {
     let command_str = command.join(" ");
@@ -343,10 +398,10 @@ pub async fn execute_command_passthrough(
     }
 
     // Wait for the process with timeout, terminating its group if it elapses.
-    let waited = tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait()).await;
+    let waited = tokio::time::timeout(timeouts.timeout(), child.wait()).await;
 
     let Ok(status) = waited else {
-        terminate_tree(&mut child).await;
+        terminate_tree(&mut child, timeouts.kill_grace()).await;
         return Err(ExecError::Timeout {
             command: command_str,
         });
@@ -467,10 +522,15 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), r#"{"result":"world"}"#.to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"))
-            .unwrap_or_else(|| panic!("expected Some"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"))
+        .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"result": "world"}));
         assert!(result.stderr.is_none());
@@ -481,10 +541,15 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["echo".to_string(), "plain text output".to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"))
-            .unwrap_or_else(|| panic!("expected Some"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"))
+        .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(
             result.stdout_payload,
@@ -497,9 +562,14 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["cat".to_string(), "/dev/null".to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"));
 
         assert!(result.is_none(), "empty stdout should return None");
     }
@@ -509,7 +579,13 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["false".to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default()).await;
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await;
         assert!(result.is_err());
 
         if let Err(ExecError::Failed {
@@ -549,7 +625,13 @@ mod tests {
         ];
 
         let started = std::time::Instant::now();
-        let result = execute_command(&payload, &command, 100, &MessageEnv::default()).await;
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(100),
+            &MessageEnv::default(),
+        )
+        .await;
 
         let Err(ExecError::Timeout { .. }) = result else {
             panic!("expected ExecError::Timeout");
@@ -558,7 +640,7 @@ mod tests {
         // The point of the test: the process is gone, not merely unwaited-for.
         // `sleep 30` dies on SIGTERM, so this must not take the full grace.
         assert!(
-            started.elapsed() < TERM_GRACE,
+            started.elapsed() < Duration::from_millis(DEFAULT_KILL_GRACE_MS),
             "timeout should terminate promptly, took {:?}",
             started.elapsed()
         );
@@ -581,10 +663,16 @@ mod tests {
         let command = vec!["sh".to_string(), "-c".to_string(), script];
 
         let started = std::time::Instant::now();
-        let result = execute_command(&payload, &command, 300, &MessageEnv::default()).await;
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(300),
+            &MessageEnv::default(),
+        )
+        .await;
         assert!(matches!(result, Err(ExecError::Timeout { .. })));
         assert!(
-            started.elapsed() < TERM_GRACE,
+            started.elapsed() < Duration::from_millis(DEFAULT_KILL_GRACE_MS),
             "reclaiming the tree should not need the full grace period, took {:?}",
             started.elapsed()
         );
@@ -602,6 +690,48 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_a_command_that_ignores_sigterm_is_killed_after_the_grace() {
+        // The grace exists for commands that clean up on SIGTERM. One that traps
+        // and ignores it must not be able to outlive its own termination.
+        let payload = json!({});
+        let command = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "trap '' TERM; sleep 600".to_string(),
+        ];
+        let timeouts = ExecTimeouts::new(100).with_kill_grace(300);
+
+        let started = std::time::Instant::now();
+        let result = execute_command(&payload, &command, timeouts, &MessageEnv::default()).await;
+
+        assert!(matches!(result, Err(ExecError::Timeout { .. })));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "SIGKILL should follow the 300ms grace, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_kill_grace_defaults_and_overrides() {
+        assert_eq!(
+            ExecTimeouts::new(1000).kill_grace_ms,
+            DEFAULT_KILL_GRACE_MS,
+            "an unset grace must fall back to the default"
+        );
+        assert_eq!(
+            ExecTimeouts::new(1000).with_kill_grace(50).timeout_ms,
+            1000,
+            "setting the grace must not disturb the timeout"
+        );
+        assert_eq!(
+            ExecTimeouts::new(1000).with_kill_grace(50).kill_grace_ms,
+            50
+        );
+    }
+
     #[tokio::test]
     async fn test_timeout_does_not_truncate_a_command_that_finishes() {
         // Draining both pipes concurrently with the wait is what keeps a chatty
@@ -613,10 +743,15 @@ mod tests {
             "head -c 200000 /dev/zero | tr '\\0' 'x'".to_string(),
         ];
 
-        let result = execute_command(&payload, &command, 10_000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"))
-            .unwrap_or_else(|| panic!("expected Some"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(10_000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"))
+        .unwrap_or_else(|| panic!("expected Some"));
 
         let output = result.stdout_payload["output"].as_str().unwrap_or_default();
         assert_eq!(output.len(), 200_000, "output was truncated");
@@ -631,10 +766,15 @@ mod tests {
             r#"printf '{"ok":true}\n' && printf 'warning: something\n' >&2"#.to_string(),
         ];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"))
-            .unwrap_or_else(|| panic!("expected Some"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"))
+        .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"ok": true}));
         assert_eq!(result.stderr.as_deref(), Some("warning: something"));
@@ -645,7 +785,13 @@ mod tests {
         let payload = json!({"input": "hello"});
         let command = vec!["nonexistent_command_that_should_not_exist".to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default()).await;
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await;
         assert!(result.is_err());
 
         if let Err(ExecError::SpawnFailed { command, .. }) = result {
@@ -660,10 +806,15 @@ mod tests {
         let payload = json!({"name": "emergent"});
         let command = vec!["cat".to_string()];
 
-        let result = execute_command(&payload, &command, 5000, &MessageEnv::default())
-            .await
-            .unwrap_or_else(|_| panic!("expected success"))
-            .unwrap_or_else(|| panic!("expected Some"));
+        let result = execute_command(
+            &payload,
+            &command,
+            ExecTimeouts::new(5000),
+            &MessageEnv::default(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("expected success"))
+        .unwrap_or_else(|| panic!("expected Some"));
 
         assert_eq!(result.stdout_payload, json!({"name": "emergent"}));
     }
@@ -782,7 +933,7 @@ mod tests {
             ..MessageEnv::default()
         };
 
-        let result = execute_command(&payload, &command, 5000, &message_env)
+        let result = execute_command(&payload, &command, ExecTimeouts::new(5000), &message_env)
             .await
             .unwrap_or_else(|_| panic!("expected success"))
             .unwrap_or_else(|| panic!("expected Some"));

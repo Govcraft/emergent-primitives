@@ -103,6 +103,7 @@ exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 - `--publish-as`: Message type for successful output (default: `exec.output`)
 - `--error-as`, `-e`: Message type for error output (default: `exec.error`)
 - `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `--kill-grace-ms`: Milliseconds a timed-out command may run after SIGTERM before SIGKILL (default: 5000)
 - `--max-concurrent`: Maximum commands running at once (default: 1)
 - `--silent-exit-codes`: Exit codes treated as a silent filter when stderr is empty (comma-separated, default: none)
 - `-- <command> [args...]`: The command to execute
@@ -154,9 +155,9 @@ overwritten by the reserved one.
 
 A timed-out command is terminated, not merely abandoned. Each command runs in
 its own process group, so the timeout reclaims anything the command started —
-the shell *and* the work it spawned. Termination is `SIGTERM`, then `SIGKILL`
-five seconds later, giving a command holding real state the chance to finish a
-write without letting one that ignores signals run forever.
+the shell *and* the work it spawned. Termination is `SIGTERM`, then `SIGKILL` after
+`--kill-grace-ms` (default 5000), giving a command holding real state the chance
+to finish a write without letting one that ignores signals run forever.
 
 ### exec-sink
 
@@ -176,6 +177,7 @@ exec-sink -s user.created -- ./scripts/send-welcome-email.sh
 **Arguments:**
 - `--subscribe`, `-s`: Message types to subscribe to (required, repeatable)
 - `--timeout`, `-t`: Per-execution timeout in milliseconds (default: 30000)
+- `--kill-grace-ms`: Milliseconds a timed-out command may run after SIGTERM before SIGKILL (default: 5000)
 - `--max-concurrent`: Maximum commands running at once (default: 1)
 - `--silent-exit-codes`: Exit codes not reported as failures (comma-separated, default: none)
 - `-- <command> [args...]`: The command to execute

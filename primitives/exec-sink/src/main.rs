@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use emergent_client::EmergentSink;
-use exec_common::{ExecError, MessageEnv, execute_command_passthrough};
+use exec_common::{ExecError, ExecTimeouts, MessageEnv, execute_command_passthrough};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -65,6 +65,14 @@ struct Args {
     /// Per-execution timeout in milliseconds.
     #[arg(short, long, default_value = "30000")]
     timeout: u64,
+
+    /// Milliseconds a timed-out command may keep running after SIGTERM.
+    ///
+    /// A timeout terminates the command's whole process group. Raise this for
+    /// commands that hold state worth flushing, and lower it for work not
+    /// worth waiting on.
+    #[arg(long, default_value_t = exec_common::DEFAULT_KILL_GRACE_MS)]
+    kill_grace_ms: u64,
 
     /// Maximum number of commands running at once.
     ///
@@ -112,7 +120,7 @@ fn failure_detail(err: &ExecError, silent_exit_codes: &[i32]) -> Option<String> 
 /// Everything an execution task needs, shared across concurrent tasks.
 struct ExecContext {
     command: Vec<String>,
-    timeout: u64,
+    timeouts: ExecTimeouts,
     silent_exit_codes: Vec<i32>,
 }
 
@@ -148,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = Arc::new(ExecContext {
         command: args.command,
-        timeout: args.timeout,
+        timeouts: ExecTimeouts::new(args.timeout).with_kill_grace(args.kill_grace_ms),
         silent_exit_codes: args.silent_exit_codes,
     });
 
@@ -192,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(err) = execute_command_passthrough(
                         msg.payload(),
                         &ctx.command,
-                        ctx.timeout,
+                        ctx.timeouts,
                         &message_env,
                     )
                     .await
