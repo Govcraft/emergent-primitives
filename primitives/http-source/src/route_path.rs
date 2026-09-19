@@ -20,6 +20,12 @@
 //!   wildcard has to be the last thing in the path. It also names captures `a`
 //!   to `z` internally and panics when it runs out.
 //!
+//! One rule is ours, not the router's. A `?` or a `#` in the literal part of a
+//! path builds a router without complaint, and the route then matches nothing:
+//! the router is only ever shown the path of a request, which ends where the
+//! query string starts, and a fragment never leaves the client. The source would
+//! start, report healthy, and answer 404 to everything, so that is refused too.
+//!
 //! Two things that look like they should be rules are not. Repeating a capture
 //! name (`/{id}/{id}`) is accepted by the router, and since this primitive never
 //! extracts captures (it publishes the concrete path the client asked for)
@@ -31,7 +37,8 @@
 //!
 //! `tests/route_path_router.rs` holds the two halves of the bargain together:
 //! every path accepted here builds a router, and every path rejected here for a
-//! router reason really does make `Router::route` panic.
+//! router reason really does make `Router::route` panic. It also sends requests
+//! at a `?` route and a `#` route to show that they answer 404 to all of them.
 
 use std::fmt;
 use std::ops::Range;
@@ -71,6 +78,21 @@ pub enum RoutePathError {
     WildcardNotLast,
     /// More than [`MAX_CAPTURES`] named captures.
     TooManyCaptures,
+    /// A `?` outside a capture name. The router accepts it and never matches it.
+    ContainsQuery,
+    /// A `#` outside a capture name. The router accepts it and never matches it.
+    ContainsFragment,
+}
+
+impl RoutePathError {
+    /// Whether the router itself would have refused the path, by panicking.
+    ///
+    /// False for the rules that exist because the router accepts a path it can
+    /// never match.
+    #[must_use]
+    pub fn is_router_rule(&self) -> bool {
+        !matches!(self, Self::ContainsQuery | Self::ContainsFragment)
+    }
 }
 
 impl fmt::Display for RoutePathError {
@@ -112,6 +134,14 @@ impl fmt::Display for RoutePathError {
                 f,
                 "a route path can hold at most {MAX_CAPTURES} named captures"
             ),
+            Self::ContainsQuery => write!(
+                f,
+                "a route path cannot contain '?', the query string is not part of the route and is published in the `query` field"
+            ),
+            Self::ContainsFragment => write!(
+                f,
+                "a route path cannot contain '#', a fragment is never sent to the server so the route would match nothing"
+            ),
         }
     }
 }
@@ -149,10 +179,11 @@ impl fmt::Display for RoutePath {
     }
 }
 
-/// Checks that `path` is a route axum 0.8 will register.
+/// Checks that `path` is a route axum 0.8 will register and can match.
 ///
-/// The checks run in the order the router runs them, so the rule reported is
-/// the one the panic would have named.
+/// The router's checks run first and in the order the router runs them, so the
+/// rule reported is the one the panic would have named. The check for a route
+/// that could never match comes last.
 ///
 /// # Errors
 ///
@@ -172,7 +203,9 @@ pub fn validate_route_path(path: &str) -> Result<(), RoutePathError> {
             return Err(RoutePathError::LegacyWildcard);
         }
     }
-    validate_captures(&unescape(path))
+    let route = unescape(path);
+    let captures = validate_captures(&route)?;
+    validate_literals(&route, &captures)
 }
 
 /// One byte of the route once `{{` and `}}` have collapsed to a single brace.
@@ -202,11 +235,13 @@ fn unescape(path: &str) -> Vec<RouteByte> {
     route
 }
 
-/// Walks every capture in `route` and applies the rules that span them.
-fn validate_captures(route: &[RouteByte]) -> Result<(), RoutePathError> {
+/// Walks every capture in `route`, applies the rules that span them, and
+/// returns where the captures are.
+fn validate_captures(route: &[RouteByte]) -> Result<Vec<Range<usize>>, RoutePathError> {
     let mut from = 0;
     let mut named = 0;
     let mut wildcard_end = None;
+    let mut captures = Vec::new();
 
     while let Some(capture) = find_capture(route, from)? {
         if is_wildcard(route, &capture) {
@@ -218,12 +253,36 @@ fn validate_captures(route: &[RouteByte]) -> Result<(), RoutePathError> {
             }
         }
         from = capture.end;
+        captures.push(capture);
     }
 
     match wildcard_end {
         Some(end) if end != route.len() => Err(RoutePathError::WildcardNotLast),
-        _ => Ok(()),
+        _ => Ok(captures),
     }
+}
+
+/// Refuses a `?` or a `#` in the text between the captures.
+///
+/// A request's path never holds either byte, so literal text containing one
+/// can never match. Inside a capture name they are only part of a name, and the
+/// route works, so `captures` is skipped.
+fn validate_literals(route: &[RouteByte], captures: &[Range<usize>]) -> Result<(), RoutePathError> {
+    let in_capture = |index: usize| captures.iter().any(|capture| capture.contains(&index));
+    let literal = route
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !in_capture(*index))
+        .map(|(_, current)| current.byte);
+
+    for byte in literal {
+        match byte {
+            b'?' => return Err(RoutePathError::ContainsQuery),
+            b'#' => return Err(RoutePathError::ContainsFragment),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether the capture spanning `capture` is a `{*wildcard}`.
@@ -324,6 +383,11 @@ mod tests {
             "/hook/{a}}b}",
             "/hook/{ü}",
             "/hük",
+            // `?` and `#` are only refused in literal text. In a capture name
+            // they are part of the name and the route matches as usual.
+            "/hook/{id?}",
+            "/hook/{id#}",
+            "/{*rest?}",
         ];
 
         for path in cases {
@@ -376,6 +440,22 @@ mod tests {
             ("/hook/{*rest}/x", E::WildcardNotLast),
             ("/hook/{*rest}/", E::WildcardNotLast),
             ("/{*a}/{*b}", E::WildcardNotLast),
+            // The router takes these and then matches nothing.
+            ("/hook?x=1", E::ContainsQuery),
+            ("/hook?", E::ContainsQuery),
+            ("/?", E::ContainsQuery),
+            ("/hook/{id}?verbose", E::CaptureNotAtSegmentEnd),
+            ("/hook/{id}/?verbose", E::ContainsQuery),
+            ("/a?b/{*rest}", E::ContainsQuery),
+            ("/hook#frag", E::ContainsFragment),
+            ("/#", E::ContainsFragment),
+            ("/hook/{id}/#top", E::ContainsFragment),
+            // Whichever comes first is the one named.
+            ("/hook?x=1#frag", E::ContainsQuery),
+            ("/hook#frag?x=1", E::ContainsFragment),
+            // A router rule still wins over these.
+            ("hook?x=1", E::MissingLeadingSlash),
+            ("/hook?x={", E::UnclosedCapture),
         ];
 
         for (path, expected) in cases {
@@ -418,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn the_query_rule_says_where_the_query_string_goes() {
+        let text = RoutePathError::ContainsQuery.to_string();
+        assert!(text.contains("`query` field"), "{text}");
+        assert!(text.contains("not part of the route"), "{text}");
+    }
+
+    #[test]
+    fn only_the_unmatchable_rules_are_not_router_rules() {
+        assert!(!RoutePathError::ContainsQuery.is_router_rule());
+        assert!(!RoutePathError::ContainsFragment.is_router_rule());
+        assert!(RoutePathError::MissingLeadingSlash.is_router_rule());
+        assert!(RoutePathError::WildcardNotLast.is_router_rule());
+    }
+
+    #[test]
     fn every_rule_reads_as_one_line() {
         use RoutePathError as E;
 
@@ -433,6 +528,8 @@ mod tests {
             E::CaptureNotAtSegmentEnd,
             E::WildcardNotLast,
             E::TooManyCaptures,
+            E::ContainsQuery,
+            E::ContainsFragment,
         ];
 
         for rule in rules {
