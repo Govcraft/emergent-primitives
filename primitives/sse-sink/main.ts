@@ -7,6 +7,11 @@
  *
  * Usage:
  *   sse-sink --port 8080
+ *   sse-sink --host 0.0.0.0 --port 8080
+ *
+ * The stream is served on 127.0.0.1 unless `--host` says otherwise. It has no
+ * authentication and by default carries every event in the pipeline, so
+ * putting it on the network is a decision, not a default.
  *
  * Connect from a browser:
  *   const source = new EventSource("http://localhost:8080/events");
@@ -17,27 +22,23 @@
 
 import { runSink } from "jsr:@govcraft/emergent@0.13.0";
 import type { EmergentMessage } from "jsr:@govcraft/emergent@0.13.0";
+import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
+import type { ListenOptions } from "./args.ts";
 
 // ============================================================================
 // CLI
 // ============================================================================
 
-function parseArgs(): { port: number } {
-  const args = Deno.args;
-  let port = 8080;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
-      port = parseInt(args[i + 1], 10);
-      if (isNaN(port) || port < 1 || port > 65535) {
-        console.error("Invalid port number");
-        Deno.exit(1);
-      }
-      i++;
-    }
+// Parse the arguments, or say what is wrong with them in one line and exit.
+function listenOptionsOrExit(): ListenOptions {
+  const parsed = parseListenArgs(Deno.args);
+  if (!parsed.ok) {
+    console.error(
+      `${parsed.error}. Usage: sse-sink [--host HOST] [--port PORT]`,
+    );
+    Deno.exit(1);
   }
-
-  return { port };
+  return parsed.options;
 }
 
 // ============================================================================
@@ -102,7 +103,7 @@ function handleRequest(req: Request): Response {
 // Main
 // ============================================================================
 
-const { port } = parseArgs();
+const { host, port } = listenOptionsOrExit();
 
 // Resolve subscribe types from EMERGENT_SUBSCRIBES env var
 let subscribeTypes: string[];
@@ -115,9 +116,26 @@ try {
   subscribeTypes = ["*"];
 }
 
-// Start SSE server
-Deno.serve({ port, handler: handleRequest });
-console.error(`[sse-sink] Listening on http://localhost:${port}/events`);
+// Start SSE server, or say in one line why the address could not be bound
+try {
+  Deno.serve({
+    hostname: host,
+    port,
+    handler: handleRequest,
+    // Log the address that was bound, not the one that was asked for.
+    onListen: (addr) =>
+      console.error(
+        `[sse-sink] Listening on ${
+          listenUrl(addr.hostname, addr.port, "/events")
+        }`,
+      ),
+  });
+} catch (err) {
+  console.error(
+    bindFailure(host, port, err instanceof Error ? err.message : String(err)),
+  );
+  Deno.exit(1);
+}
 
 // Connect to engine and broadcast events
 await runSink(undefined, subscribeTypes, (msg) => {

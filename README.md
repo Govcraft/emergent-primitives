@@ -27,7 +27,9 @@ exec-sink -s alert.fired -- curl -s -X POST -H "Content-Type: application/json" 
 exec-sink -s data.processed -- tee -a /var/log/events.jsonl
 ```
 
-The [`topology-viewer`](primitives/topology-viewer/) sink draws the running topology as a live graph; its README covers the page, `GET /api/topology` and `POST /api/refresh`.
+The [`topology-viewer`](primitives/topology-viewer/) sink draws the running topology as a live graph; its README covers the page, `GET /api/topology` and `POST /api/refresh`. The [`sse-sink`](primitives/sse-sink/) sink pushes events to browsers as Server-Sent Events.
+
+**Behavior change after 0.11.0:** `topology-viewer` and `sse-sink` listen on `127.0.0.1` by default. On 0.11.0 and earlier they had no `--host` option and listened on every interface (`0.0.0.0`). Neither has authentication, so exposing them is now a decision: pass `--host 0.0.0.0` (or a specific interface address) if you reach them from another machine or from outside a container. Both also reject arguments they do not know instead of ignoring them.
 
 ## Installation
 
