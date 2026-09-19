@@ -4,14 +4,17 @@
  */
 
 import type {
-  TopologyNode,
-  TopologyEdge,
-  TopologyState,
-  SSEMessage,
   NodeStatus,
   PrimitiveKind,
+  SSEMessage,
+  TopologyEdge,
+  TopologyNode,
+  TopologyState,
 } from "./types.ts";
-import type { SystemEventPayload, TopologyPrimitive } from "jsr:@govcraft/emergent@0.13.0";
+import type {
+  SystemEventPayload,
+  TopologyPrimitive,
+} from "jsr:@govcraft/emergent@0.13.0";
 
 /**
  * Manages the topology graph state and SSE broadcasting.
@@ -119,15 +122,17 @@ export class TopologyGraph {
    * Handle a full topology refresh from system.response.topology.
    * Updates all nodes and broadcasts full state to SSE clients.
    */
-  handleTopologyRefresh(primitives: Array<{
-    name: string;
-    kind: string;
-    state: string;
-    publishes: string[];
-    subscribes: string[];
-    pid?: number;
-    error?: string;
-  }>): void {
+  handleTopologyRefresh(
+    primitives: Array<{
+      name: string;
+      kind: string;
+      state: string;
+      publishes: string[];
+      subscribes: string[];
+      pid?: number;
+      error?: string;
+    }>,
+  ): void {
     // Clear existing nodes except manually added ones (like emergent-engine)
     // Actually, let's replace everything with the authoritative response
     this.nodes.clear();
@@ -205,7 +210,7 @@ export class TopologyGraph {
     if (!pattern.includes("*")) return false;
 
     const regex = new RegExp(
-      "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, "[^.]+") + "$"
+      "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, "[^.]+") + "$",
     );
     return regex.test(messageType);
   }
@@ -216,10 +221,10 @@ export class TopologyGraph {
   computeEdges(): TopologyEdge[] {
     const edges: TopologyEdge[] = [];
     const publishers = Array.from(this.nodes.values()).filter(
-      (n) => n.publishes.length > 0
+      (n) => n.publishes.length > 0,
     );
     const subscribers = Array.from(this.nodes.values()).filter(
-      (n) => n.subscribes.length > 0
+      (n) => n.subscribes.length > 0,
     );
 
     for (const pub of publishers) {
@@ -257,7 +262,7 @@ export class TopologyGraph {
    * Register an SSE client controller.
    */
   registerSSEClient(
-    controller: ReadableStreamDefaultController<Uint8Array>
+    controller: ReadableStreamDefaultController<Uint8Array>,
   ): void {
     this.sseClients.add(controller);
 
@@ -280,7 +285,7 @@ export class TopologyGraph {
    * Unregister an SSE client controller.
    */
   unregisterSSEClient(
-    controller: ReadableStreamDefaultController<Uint8Array>
+    controller: ReadableStreamDefaultController<Uint8Array>,
   ): void {
     this.sseClients.delete(controller);
   }

@@ -98,11 +98,13 @@ async function connectWithRetry(
   name: string,
   graph: TopologyGraph,
   maxRetries = 30,
-  retryDelayMs = 2000
+  retryDelayMs = 2000,
 ): Promise<void> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[${name}] Connecting to engine (attempt ${attempt}/${maxRetries})...`);
+      console.log(
+        `[${name}] Connecting to engine (attempt ${attempt}/${maxRetries})...`,
+      );
 
       // Connect explicitly and subscribe with our own types
       // (not relying on engine config since we're externally managed)
@@ -132,21 +134,25 @@ async function connectWithRetry(
                 }>;
               }
               const topoPayload = msg.payloadAs<TopologyResponse>();
-              console.log(`[${name}] Topology refresh: ${topoPayload.primitives.length} primitive(s)`);
+              console.log(
+                `[${name}] Topology refresh: ${topoPayload.primitives.length} primitive(s)`,
+              );
               graph.handleTopologyRefresh(topoPayload.primitives);
             } else {
               const payload = msg.payloadAs<SystemEventPayload>();
 
               if (msg.messageType.startsWith("system.started.")) {
                 console.log(
-                  `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
+                  `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`,
                 );
                 graph.handleStarted(payload);
               } else if (msg.messageType.startsWith("system.stopped.")) {
                 console.log(`[${name}] Stopped: ${payload.name}`);
                 graph.handleStopped(payload);
               } else if (msg.messageType.startsWith("system.error.")) {
-                console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
+                console.log(
+                  `[${name}] Error: ${payload.name} - ${payload.error}`,
+                );
                 graph.handleError(payload);
               }
             }
@@ -200,30 +206,33 @@ async function main(): Promise<void> {
   console.log(`[${name}] Starting topology viewer on port ${port}`);
 
   // Start HTTP server first (non-blocking)
-  const server = Deno.serve({ port }, (req: Request): Response | Promise<Response> => {
-    const url = new URL(req.url);
-    const path = url.pathname;
+  const server = Deno.serve(
+    { port },
+    (req: Request): Response | Promise<Response> => {
+      const url = new URL(req.url);
+      const path = url.pathname;
 
-    switch (path) {
-      case "/":
-        return readStaticFile("index.html");
-      case "/app.js":
-        return readStaticFile("app.js");
-      case "/style.css":
-        return readStaticFile("style.css");
-      case "/events":
-        return createSSEStream(graph);
-      case "/api/topology":
-        return new Response(JSON.stringify(graph.getFullState()), {
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-          },
-        });
-      default:
-        return new Response("Not Found", { status: 404 });
-    }
-  });
+      switch (path) {
+        case "/":
+          return readStaticFile("index.html");
+        case "/app.js":
+          return readStaticFile("app.js");
+        case "/style.css":
+          return readStaticFile("style.css");
+        case "/events":
+          return createSSEStream(graph);
+        case "/api/topology":
+          return new Response(JSON.stringify(graph.getFullState()), {
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        default:
+          return new Response("Not Found", { status: 404 });
+      }
+    },
+  );
 
   console.log(`[${name}] HTTP server listening on http://localhost:${port}`);
 

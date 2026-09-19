@@ -25,7 +25,7 @@
  * @module
  */
 
-import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent@0.13.0";
+import { createMessage, EmergentHandler } from "jsr:@govcraft/emergent@0.13.0";
 
 // ============================================================================
 // CLI Argument Parsing
@@ -253,9 +253,7 @@ function handleSend(
     return;
   }
 
-  const data = typeof payload === "string"
-    ? payload
-    : JSON.stringify(payload);
+  const data = typeof payload === "string" ? payload : JSON.stringify(payload);
   currentWs.send(data);
 }
 
