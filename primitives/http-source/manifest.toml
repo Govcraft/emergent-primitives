@@ -1,0 +1,64 @@
+# HTTP Source Primitive Manifest
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "http-source"
+kind = "source"
+description = "Generic HTTP webhook receiver"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["http", "webhooks", "api"]
+
+[messages]
+publishes = ["http.request"]
+
+# CLI Arguments
+[[args]]
+name = "port"
+long = "port"
+short = "p"
+env = "HTTP_SOURCE_PORT"
+required = false
+description = "Port to listen on (default: 8080)"
+
+[[args]]
+name = "host"
+long = "host"
+env = "HTTP_SOURCE_HOST"
+required = false
+description = "Host to bind to (default: 0.0.0.0)"
+
+[[args]]
+name = "path"
+long = "path"
+env = "HTTP_SOURCE_PATH"
+required = false
+description = "URL path to listen on (default: /)"
+
+[[args]]
+name = "secret"
+long = "secret"
+env = "HTTP_SOURCE_SECRET"
+required = false
+description = "Optional HMAC secret for signature verification"
+
+[[args]]
+name = "trust-forwarded-for"
+long = "trust-forwarded-for"
+required = false
+description = "Boolean flag. Report remote_addr from X-Forwarded-For instead of the socket peer. Use only behind a reverse proxy that overwrites the header (default: off)"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]

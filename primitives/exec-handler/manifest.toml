@@ -1,0 +1,75 @@
+# Exec Handler Primitive Manifest
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "exec-handler"
+kind = "handler"
+description = "Subscribe to events, pipe payloads through an executable, publish results"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["exec", "shell", "command", "transform"]
+
+[messages]
+subscribes = ["*"]
+publishes = ["exec.output", "exec.error"]
+
+# CLI Arguments
+[[args]]
+name = "subscribe"
+long = "subscribe"
+short = "s"
+required = true
+description = "Message types to subscribe to (can be repeated)"
+
+[[args]]
+name = "publish-as"
+long = "publish-as"
+required = false
+description = "Message type for successful output (default: exec.output)"
+
+[[args]]
+name = "error-as"
+long = "error-as"
+short = "e"
+required = false
+description = "Message type for error output (default: exec.error)"
+
+[[args]]
+name = "timeout"
+long = "timeout"
+short = "t"
+required = false
+description = "Per-execution timeout in milliseconds (default: 30000)"
+
+[[args]]
+name = "kill-grace-ms"
+long = "kill-grace-ms"
+required = false
+description = "Milliseconds a timed-out command may run after SIGTERM before SIGKILL (default: 5000)"
+
+[[args]]
+name = "max-concurrent"
+long = "max-concurrent"
+required = false
+description = "Maximum commands running at once (default: 1; above 1, outputs publish in completion order)"
+
+[[args]]
+name = "silent-exit-codes"
+long = "silent-exit-codes"
+required = false
+description = "Exit codes treated as a silent filter when stderr is empty, comma-separated (default: none — every failure publishes an error event)"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]

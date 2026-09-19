@@ -1,0 +1,82 @@
+# Exec Source Primitive Manifest
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "exec-source"
+kind = "source"
+description = "Execute shell commands and emit output as events"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["exec", "shell", "command"]
+
+[messages]
+publishes = ["exec.output", "exec.error", "exec.exit"]
+
+# CLI Arguments
+[[args]]
+name = "command"
+long = "command"
+short = "c"
+env = "EXEC_SOURCE_COMMAND"
+required = true
+description = "Command to execute"
+
+[[args]]
+name = "args"
+long = "args"
+short = "a"
+env = "EXEC_SOURCE_ARGS"
+required = false
+description = "Arguments to pass to the command (can be repeated)"
+
+[[args]]
+name = "interval"
+long = "interval"
+short = "i"
+env = "EXEC_SOURCE_INTERVAL"
+required = false
+description = "Interval in milliseconds between executions (default: run once)"
+
+[[args]]
+name = "working-dir"
+long = "working-dir"
+short = "d"
+env = "EXEC_SOURCE_WORKING_DIR"
+required = false
+description = "Working directory for command execution"
+
+[[args]]
+name = "shell"
+long = "shell"
+short = "s"
+env = "EXEC_SOURCE_SHELL"
+required = false
+description = "Shell to use for command execution (default: sh on Unix, cmd on Windows)"
+
+[[args]]
+name = "correlate"
+long = "correlate"
+required = false
+description = "Mint one correlation ID at startup and stamp it on every published message"
+
+[[args]]
+name = "correlation-id"
+long = "correlation-id"
+env = "EMERGENT_CORRELATION_ID"
+required = false
+description = "Adopt an existing cor_<uuid_v7> instead of minting one (env: EMERGENT_CORRELATION_ID), so a run spanning several engines stays one trail"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]

@@ -1,0 +1,90 @@
+# Stream Runner Primitive Manifest
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "stream-runner"
+kind = "handler"
+description = "Emit a JSON collection one item at a time, waiting for downstream ack before advancing"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["streaming", "flow-control", "backpressure", "pipeline"]
+
+[messages]
+subscribes = ["stream.load", "stream.ack"]
+publishes = ["stream.item", "stream.end", "stream.rejected", "stream.item-timed-out"]
+
+# CLI Arguments
+[[args]]
+name = "load-topic"
+long = "load-topic"
+required = false
+description = "Event carrying the JSON collection to stream (default: stream.load)"
+
+[[args]]
+name = "publish-as"
+long = "publish-as"
+required = false
+description = "Topic on which to emit each item (default: stream.item)"
+
+[[args]]
+name = "ack-topic"
+long = "ack-topic"
+required = false
+description = "Topic to wait for before advancing to the next item (default: stream.ack)"
+
+[[args]]
+name = "end-topic"
+long = "end-topic"
+required = false
+description = "Topic published when the run finishes (default: stream.end)"
+
+[[args]]
+name = "rejected-topic"
+long = "rejected-topic"
+required = false
+description = "Topic published when a load is dropped, with reason busy or bad_shape (default: stream.rejected)"
+
+[[args]]
+name = "timed-out-topic"
+long = "timed-out-topic"
+required = false
+description = "Topic published when an ack does not arrive in time (default: stream.item-timed-out)"
+
+[[args]]
+name = "items-key"
+long = "items-key"
+required = false
+description = "JSON object key containing the array to stream (default: items)"
+
+[[args]]
+name = "ack-key"
+long = "ack-key"
+required = false
+description = "Field that must agree between an item and its ack (default: unset, any message on the ack topic advances)"
+
+[[args]]
+name = "ack-timeout-ms"
+long = "ack-timeout-ms"
+required = false
+description = "How long an item may wait for its ack, in milliseconds (default: unset, it waits forever)"
+
+[[args]]
+name = "on-timeout"
+long = "on-timeout"
+required = false
+description = "skip the item or end the run when an ack times out (default: skip, needs --ack-timeout-ms)"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
