@@ -36,6 +36,7 @@
  */
 
 import { createMessage, EmergentHandler } from "jsr:@govcraft/emergent@0.13.0";
+import { decodeFrame } from "./frames.ts";
 import {
   type CloseObservation,
   type CloseRequester,
@@ -132,21 +133,6 @@ async function publish(
   }
 }
 
-/** Decode a frame: JSON when it parses, the raw text otherwise, base64 for binary. */
-function decodeFrame(raw: unknown): unknown {
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return raw;
-    }
-  }
-  if (raw instanceof ArrayBuffer) {
-    return btoa(String.fromCharCode(...new Uint8Array(raw)));
-  }
-  return String(raw);
-}
-
 /** Ask a connection to close on behalf of `requester`. */
 function closeConnection(conn: Connection, requester: CloseRequester): void {
   conn.state = requestClose(conn.state, requester);
@@ -198,6 +184,9 @@ async function handleConnect(
   };
   current = conn;
   live.add(conn);
+
+  // The default is "blob", which would reach decodeFrame as "[object Blob]".
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = async () => {
     conn.state = markOpened(conn.state);
