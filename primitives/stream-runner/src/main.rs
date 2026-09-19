@@ -11,6 +11,13 @@
 //! 4. Emit the next item; repeat until exhausted
 //! 5. Publish `end_topic` with `{"count": N}` when all items have been emitted
 //!
+//! # Structure
+//!
+//! Every decision lives in [`stream_runner::machine`], a pure function over
+//! plain data. This file is the shell around it: it reads the command line,
+//! turns inbound messages into machine inputs, and carries out the effects the
+//! machine returns. It decides nothing itself.
+//!
 //! # Messages Published
 //!
 //! - Configurable item type (default: `stream.item`) — one item per ack cycle
@@ -29,9 +36,9 @@
 //! ```
 
 use clap::Parser;
-use emergent_client::types::{CausationId, CorrelationId};
+use emergent_client::types::CausationId;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use serde_json::{Value, json};
+use stream_runner::machine::{Config, Effect, Ignored, Input, Origin, Publication, State, step};
 use tokio::signal::unix::{SignalKind, signal};
 
 /// Stream Runner — emit collection items one at a time, waiting for downstream ack before advancing.
@@ -62,17 +69,52 @@ struct Args {
     items_key: String,
 }
 
-enum State {
-    Idle,
-    Streaming {
-        items: Vec<Value>,
-        next_index: usize,
-        causation_id: CausationId,
-        /// The load message's correlation, replayed onto every item and the end
-        /// event. Acks are separate messages and cannot be trusted to carry it,
-        /// so the run's identity is held here for the length of the stream.
-        correlation_id: Option<CorrelationId>,
-    },
+/// Where each kind of published message goes.
+struct Topics {
+    item: String,
+    end: String,
+}
+
+/// The async shell: the state machine and its configuration.
+struct Runner {
+    config: Config,
+    topics: Topics,
+    state: State,
+}
+
+impl Runner {
+    /// Feed one input to the machine and carry out what it returns.
+    async fn drive(&mut self, handler: &EmergentHandler, input: Input) {
+        let (state, effects) = step(&self.config, std::mem::take(&mut self.state), input);
+        self.state = state;
+        for effect in effects {
+            self.apply(handler, effect).await;
+        }
+    }
+
+    async fn apply(&mut self, handler: &EmergentHandler, effect: Effect) {
+        match effect {
+            Effect::PublishItem(publication) => {
+                publish(handler, &self.topics.item, publication).await;
+            }
+            Effect::PublishCompleted(publication) => {
+                publish(handler, &self.topics.end, publication).await;
+            }
+            Effect::LogIgnored(Ignored::AckWhileIdle) => {
+                tracing::debug!("Received ack while idle, ignoring");
+            }
+            Effect::LogIgnored(Ignored::LoadWhileStreaming { index, total }) => {
+                tracing::warn!(
+                    index,
+                    total,
+                    "Received load while already streaming, ignoring"
+                );
+            }
+            Effect::LogIgnored(Ignored::BadShape { detail }) => {
+                tracing::warn!("Failed to extract items from payload: {detail}");
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -84,8 +126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let publish_types = resolve_publish_types_from_env(&[&args.publish_as, &args.end_topic]);
-    let publish_as = publish_types[0].clone();
-    let end_topic = publish_types[1].clone();
+    let topics = Topics {
+        item: publish_types[0].clone(),
+        end: publish_types[1].clone(),
+    };
+
+    let config = Config {
+        items_key: args.items_key.clone(),
+    };
 
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "stream-runner".to_string());
 
@@ -107,7 +155,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut sigterm = signal(SignalKind::terminate())?;
-    let mut state = State::Idle;
+    let mut runner = Runner {
+        config,
+        topics,
+        state: State::new(),
+    };
 
     loop {
         tokio::select! {
@@ -118,18 +170,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             msg = stream.next() => match msg {
                 None => break,
-                Some(msg) if msg.message_type.as_str() == args.load_topic => {
-                    handle_load(msg, &args, &mut state, &handler, &publish_as, &end_topic).await;
+                Some(msg) => {
+                    if let Some(input) = classify(&msg, &args.load_topic, &args.ack_topic) {
+                        runner.drive(&handler, input).await;
+                    }
                 }
-                Some(msg) if msg.message_type.as_str() == args.ack_topic => {
-                    handle_ack(&mut state, &handler, &publish_as, &end_topic).await;
-                }
-                Some(_) => {}
             }
         }
     }
 
     Ok(())
+}
+
+/// Turn an inbound message into a machine input, or ignore it.
+fn classify(msg: &EmergentMessage, load_topic: &str, ack_topic: &str) -> Option<Input> {
+    let message_type = msg.message_type.as_str();
+    if message_type == load_topic {
+        Some(Input::Load {
+            payload: msg.payload().clone(),
+            origin: Origin {
+                causation_id: CausationId::from(msg.id()),
+                correlation_id: msg.correlation_id.clone(),
+            },
+        })
+    } else if message_type == ack_topic {
+        Some(Input::Ack {
+            payload: msg.payload().clone(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Publish one machine [`Publication`] on a topic, replaying the run's identity.
+async fn publish(handler: &EmergentHandler, message_type: &str, publication: Publication) {
+    let msg = EmergentMessage::new(message_type)
+        .with_causation_id(publication.origin.causation_id)
+        .with_correlation_id_option(publication.origin.correlation_id.as_ref())
+        .with_payload(publication.payload);
+    if let Err(e) = handler.publish(msg).await {
+        tracing::warn!("Failed to publish {message_type}: {e}");
+    }
 }
 
 /// Resolve publish message types from the `EMERGENT_PUBLISHES` environment variable.
@@ -145,198 +226,5 @@ fn resolve_publish_types_from_env(defaults: &[&str]) -> Vec<String> {
             .collect()
     } else {
         defaults.iter().map(|s| s.to_string()).collect()
-    }
-}
-
-/// Extract the items array from a payload.
-///
-/// If `payload` is a bare array, returns it directly.
-/// If `payload` is an object, looks up `items_key` and returns its array value.
-/// Returns `Err` for any other shape.
-fn extract_items(payload: &Value, items_key: &str) -> Result<Vec<Value>, String> {
-    match payload {
-        Value::Array(arr) => Ok(arr.clone()),
-        Value::Object(obj) => match obj.get(items_key) {
-            Some(Value::Array(arr)) => Ok(arr.clone()),
-            Some(_) => Err(format!("key '{items_key}' is not an array")),
-            None => Err(format!("object has no key '{items_key}'")),
-        },
-        _ => Err(format!("payload is not an array or object: {payload}")),
-    }
-}
-
-async fn handle_load(
-    msg: EmergentMessage,
-    args: &Args,
-    state: &mut State,
-    handler: &EmergentHandler,
-    publish_as: &str,
-    end_topic: &str,
-) {
-    if matches!(state, State::Streaming { .. }) {
-        tracing::warn!("Received load while already streaming, ignoring");
-        return;
-    }
-
-    let payload = msg.payload().clone();
-    let items = match extract_items(&payload, &args.items_key) {
-        Ok(items) => items,
-        Err(e) => {
-            tracing::warn!("Failed to extract items from payload: {e}");
-            return;
-        }
-    };
-
-    let causation_id = CausationId::from(msg.id());
-    let correlation_id = msg.correlation_id.clone();
-
-    if items.is_empty() {
-        let end_msg = EmergentMessage::new(end_topic)
-            .with_causation_id(causation_id)
-            .with_correlation_id_option(correlation_id.as_ref())
-            .with_payload(json!({"count": 0}));
-        if let Err(e) = handler.publish(end_msg).await {
-            tracing::warn!("Failed to publish end event for empty collection: {e}");
-        }
-        return;
-    }
-
-    let first_item = items[0].clone();
-    emit_current(
-        &first_item,
-        &causation_id,
-        correlation_id.as_ref(),
-        handler,
-        publish_as,
-    )
-    .await;
-    *state = State::Streaming {
-        items,
-        next_index: 0,
-        causation_id,
-        correlation_id,
-    };
-}
-
-async fn handle_ack(
-    state: &mut State,
-    handler: &EmergentHandler,
-    publish_as: &str,
-    end_topic: &str,
-) {
-    let (emit_item, end_info) = match state {
-        State::Idle => {
-            tracing::debug!("Received ack while idle, ignoring");
-            return;
-        }
-        State::Streaming {
-            items,
-            next_index,
-            causation_id,
-            correlation_id,
-        } => {
-            *next_index += 1;
-            if *next_index < items.len() {
-                (
-                    Some((
-                        items[*next_index].clone(),
-                        causation_id.clone(),
-                        correlation_id.clone(),
-                    )),
-                    None,
-                )
-            } else {
-                (
-                    None,
-                    Some((items.len(), causation_id.clone(), correlation_id.clone())),
-                )
-            }
-        }
-    };
-
-    if let Some((item, cid, corr)) = emit_item {
-        emit_current(&item, &cid, corr.as_ref(), handler, publish_as).await;
-    } else if let Some((count, cid, corr)) = end_info {
-        *state = State::Idle;
-        let end_msg = EmergentMessage::new(end_topic)
-            .with_causation_id(cid)
-            .with_correlation_id_option(corr.as_ref())
-            .with_payload(json!({"count": count}));
-        if let Err(e) = handler.publish(end_msg).await {
-            tracing::warn!("Failed to publish end event: {e}");
-        }
-    }
-}
-
-/// Emit the current item from a `Streaming` state at a single publish site.
-async fn emit_current(
-    item: &Value,
-    causation_id: &CausationId,
-    correlation_id: Option<&CorrelationId>,
-    handler: &EmergentHandler,
-    publish_as: &str,
-) {
-    let msg = EmergentMessage::new(publish_as)
-        .with_causation_id(causation_id.clone())
-        .with_correlation_id_option(correlation_id)
-        .with_payload(item.clone());
-    if let Err(e) = handler.publish(msg).await {
-        tracing::warn!("Failed to publish stream item: {e}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn bare_array_returns_all_items() {
-        let payload = json!([1, 2, 3]);
-        let result = extract_items(&payload, "items")
-            .unwrap_or_else(|e| panic!("expected Ok, got Err: {e}"));
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn object_with_default_key_returns_items() {
-        let payload = json!({"items": [1, 2, 3]});
-        let result = extract_items(&payload, "items")
-            .unwrap_or_else(|e| panic!("expected Ok, got Err: {e}"));
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn object_with_custom_key_returns_items() {
-        let payload = json!({"records": [1]});
-        let result = extract_items(&payload, "records")
-            .unwrap_or_else(|e| panic!("expected Ok, got Err: {e}"));
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn object_missing_key_returns_err() {
-        let payload = json!({"other": [1, 2]});
-        assert!(extract_items(&payload, "items").is_err());
-    }
-
-    #[test]
-    fn null_payload_returns_err() {
-        let payload = json!(null);
-        assert!(extract_items(&payload, "items").is_err());
-    }
-
-    #[test]
-    fn key_maps_to_non_array_returns_err() {
-        let payload = json!({"items": "not-an-array"});
-        assert!(extract_items(&payload, "items").is_err());
-    }
-
-    #[test]
-    fn empty_array_returns_ok_empty() {
-        let payload = json!([]);
-        let result = extract_items(&payload, "items")
-            .unwrap_or_else(|e| panic!("expected Ok, got Err: {e}"));
-        assert!(result.is_empty());
     }
 }
