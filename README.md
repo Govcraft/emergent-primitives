@@ -11,6 +11,7 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 | [`exec-handler`](primitives/exec-handler/) | handler | Pipe event payloads through any executable and publish results |
 | [`exec-sink`](primitives/exec-sink/) | sink | Pipe event payloads through any executable (fire-and-forget) |
 | [`stream-runner`](primitives/stream-runner/) | handler | Emit a JSON collection one item at a time, waiting for downstream ack before advancing |
+| [`jev-handler`](primitives/jev-handler/) | handler | Ask TypeSafe System One typed questions about event payloads |
 
 The exec trio covers most use cases without writing code:
 
@@ -200,6 +201,216 @@ Timeouts terminate the command's process group as in exec-handler, so a
 fire-and-forget command that outlives its timeout is stopped rather than left
 running unsupervised.
 
+### jev-handler
+
+Subscribe to events, ask the [TypeSafe System One](https://docs.typesafe.ai) API
+a fixed set of typed questions about each payload, and publish the answers.
+
+```bash
+TYPESAFE_API_KEY=... jev-handler -s email.received --questions ./questions.toml
+```
+
+**Arguments:**
+- `--subscribe`, `-s`: Message types to subscribe to (required, repeatable)
+- `--questions`: Path to the questions file, `.toml` or `.json` (required)
+- `--publish-as`: Message type for an answered message (default: `jev.answered`)
+- `--error-as`, `-e`: Message type for a failed message (default: `jev.error`)
+- `--model`: Model alias or pinned model id (default: `jev-latest`)
+- `--state-pointer`: JSON pointer to the part of the payload sent as `state` (default: the whole payload)
+- `--timeout`, `-t`: Total budget for one message in milliseconds, retries included (default: 120000)
+- `--request-timeout`: Timeout for a single HTTP attempt in milliseconds (default: 30000)
+- `--max-concurrent`: Maximum messages in flight at once (default: 1)
+- `--max-attempts`: Total attempts per message, including the first (default: 4)
+- `--retry-base-ms`: First backoff step; doubled per attempt (default: 500)
+- `--retry-max-delay-ms`: Ceiling on a computed backoff (default: 30000)
+- `--max-retry-after-ms`: Ceiling on a server-supplied `Retry-After` (default: 60000)
+- `--endpoint`: Evaluation endpoint (default: `https://api.typesafe.ai/v1/systemone`)
+
+**Subscribes:** configurable via `--subscribe`
+**Publishes:** `jev.answered`, `jev.error` (configurable)
+
+The API key is read from `TYPESAFE_API_KEY` and nowhere else. There is
+deliberately no `--api-key` flag: a key on a command line is a key in the
+process table and in `emergent.toml`. The key never appears in a log line, in a
+published payload, or in `Debug` output.
+
+#### The questions file
+
+One file, read once at startup, asked about every message. It mirrors the
+TypeSafe request's `questions` map one-to-one, so the vendor's documentation
+describes this file too:
+
+```toml
+# noul — a yes/no judgement; the answer is a bare probability in 0..=1.
+# `criteria` is optional and may only use the keys "true" and "false".
+[questions.lure]
+type = "noul"
+instructions = "Does this message try to get the reader to click a link or reply with information?"
+criteria = { "true" = "There is something concrete to act on.", "false" = "The message is informational only." }
+
+# choice — one option out of a defined set; at least two options.
+[questions.kind]
+type = "choice"
+instructions = "What kind of message is this?"
+criteria = { phish = "Credential theft under a false identity.", cold_pitch = "Unsolicited sales.", vendor_notice = "A legitimate operational notice.", personal = "Ordinary correspondence." }
+
+# score — a position along an ordered rubric; order is the meaning, and the
+# answer may land between levels.
+[questions.pressure]
+type = "score"
+instructions = "How much time pressure does the message apply?"
+criteria = ["No deadline is expressed.", "A soft deadline.", "Act now or lose access."]
+```
+
+The same file may be written as JSON; the extension picks the parser and both
+produce an identical question set. A full example with all three types is in
+[`primitives/jev-handler/examples/questions.toml`](primitives/jev-handler/examples/questions.toml).
+
+Validation happens at startup, before the engine is connected, so a misconfigured
+handler never appears healthy in a topology. Unknown keys are rejected rather
+than ignored — a `critera` typo would otherwise leave a choice question with no
+options on every message. Question ids are restricted to
+`[A-Za-z_][A-Za-z0-9_]*` so a downstream router can always write
+`.answers.kind` without quoting.
+
+#### What it publishes
+
+A successful message publishes the answers **in the API's exact JSON shape**,
+with the inbound payload nested under `input`:
+
+```json
+{
+  "input": {"issue": 42, "subject": "Action required"},
+  "answers": {
+    "lure": {"type": "noul", "noul": 0.93},
+    "kind": {"type": "choice", "choice": "phish", "confidence": 0.99,
+             "probabilities": {"phish": 0.99, "cold_pitch": 0.0, "vendor_notice": 0.01, "personal": 0.0}},
+    "pressure": {"type": "score", "score": 2.0, "confidence": 1.0,
+                 "legend": {"0": "No deadline is expressed.", "1": "A soft deadline.", "2": "Act now or lose access."},
+                 "probabilities": {"0": 0.0, "1": 0.0, "2": 1.0}}
+  },
+  "usage": {"input_tokens": 391, "output_tokens": 34},
+  "model": "jev-1.13.0",
+  "request_id": "req_2f8c1d..."
+}
+```
+
+The shape is passed through untouched because that is what downstream `jq`
+routers select on. `input` is nested rather than spread: `answers`, `usage`, and
+`model` would collide with ordinary payload keys.
+
+Failures publish an error event carrying the inbound payload, following the same
+rule as `exec-handler`: the details go under a reserved `error` key with the
+inbound fields spread alongside, and a payload that is not a JSON object is
+carried under `input` instead.
+
+```json
+{"issue": 42,
+ "error": {"kind": "rate_limited", "status": 429, "attempts": 4,
+           "message": "rate limited by the API (HTTP 429) after 4 attempt(s)",
+           "endpoint": "https://api.typesafe.ai/v1/systemone", "model": "jev-latest",
+           "request_id": "req_2f8c1d...", "body": "…", "detail": null}}
+```
+
+`error.kind` is the contract a router selects on. It is one of `auth`,
+`invalid_request`, `rate_limited`, `server_error`, `transport`, `timeout`,
+`bad_response`, `answer_contract`, `state_not_found` — enough to page a human on
+`auth`, requeue `rate_limited`, and quarantine `invalid_request`, which means
+the questions file is wrong and retrying the item would fail the same way. A
+`422` additionally surfaces the API's own `detail` array as structured JSON, so
+a router can see which question was rejected.
+
+Error bodies are truncated to 2 KiB and may echo the state that was sent. That
+is the operator's own data rather than a secret, but it does land in the event
+store.
+
+#### Routing is topology, not code
+
+This primitive publishes exactly two message types and makes no decision about
+the answers. Confidence banding, thresholds, and fan-out are `exec-handler`
+blocks running `jq` selectors over the published `answers` — which is why the
+answers must keep the vendor's shape.
+
+```toml
+# Ask the questions. One POST per inbound message.
+[[handlers]]
+name = "triage-judge"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = [
+    "-s", "email.received",
+    "--questions", "/etc/emergent/triage.toml",
+    "--state-pointer", "/body",
+    "--max-concurrent", "4",
+]
+subscribes = ["email.received"]
+publishes = ["jev.answered", "jev.error"]
+env = { TYPESAFE_API_KEY = "sk-..." }
+
+# Route on confidence. The three selectors are mutually exclusive and cover
+# every value in 0..=1, so exactly one of them republishes each message and
+# nothing is silently dropped.
+[[handlers]]
+name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.answered", "--publish-as", "triage.confident",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["jev.answered"]
+publishes = ["triage.confident"]
+
+[[handlers]]
+name = "route-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.answered", "--publish-as", "triage.uncertain",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.6 and .answers.kind.confidence < 0.9)"]
+subscribes = ["jev.answered"]
+publishes = ["triage.uncertain"]
+
+[[handlers]]
+name = "route-review"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.answered", "--publish-as", "triage.needs_review",
+        "--", "jq", "-c", "select(.answers.kind.confidence < 0.6)"]
+subscribes = ["jev.answered"]
+publishes = ["triage.needs_review"]
+
+# Failures route on kind, not on confidence.
+[[handlers]]
+name = "route-bad-config"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.error", "--publish-as", "triage.quarantined",
+        "--", "jq", "-c", "select(.error.kind == \"invalid_request\" or .error.kind == \"auth\")"]
+subscribes = ["jev.error"]
+publishes = ["triage.quarantined"]
+```
+
+A `jq -c 'select(...)'` that matches nothing writes nothing and exits 0, which
+`exec-handler` treats as a filter and drops — so a band that does not apply
+publishes nothing rather than an empty event. Changing a threshold is a config
+edit, not a rebuild, and the raw judgements stay reusable because no primitive
+has baked a policy into them.
+
+#### Concurrency and rate limits
+
+`--max-concurrent` is the real rate control against a rate-limited API, and it
+defaults to 1 to match the other handlers. **A task waiting out a retry backoff
+holds its slot**, so at 1 a `429` storm stalls the handler until the limit
+clears. That is honest backpressure rather than a bug, but an operator who does
+not expect it will read it as a hang; for an IO-bound API call a higher value is
+usually right.
+
+The two timeouts are separate on purpose. `--timeout` is the budget for one
+whole message including every retry; `--request-timeout` bounds one HTTP
+attempt. With a single knob, retries silently blow past the budget the operator
+thought they set.
+
+Retries cover `429`, `5xx` (including TypeSafe's `529 Overloaded`), and
+transport failures. Every other `4xx` is fatal on the first attempt: a bad key
+or a rejected questions file would fail identically on every one. A
+`Retry-After` header is honoured but clamped to `--max-retry-after-ms`, since
+otherwise a server can pin a concurrency slot for an hour with nothing in the
+logs to explain it. Only the delta-seconds form of `Retry-After` is read; the
+HTTP-date form falls back to computed backoff.
+
 ## Envelope Variables
 
 Exec primitives pipe only the message *payload* to a command's stdin, so the
@@ -227,6 +438,12 @@ smuggling them through the payload.
 ## Shared Code
 
 The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, process-group isolation and timeout termination, JSON output parsing, identity-preserving error payloads, and the `MessageEnv` envelope-to-environment mapping.
+
+Its `error_payload` is the one place the error-event merge rule lives — reserved
+`error` key, inbound payload spread alongside, non-objects under `input`. Any
+primitive that publishes a failure applies that function rather than a second
+copy of the rule that can drift, which is how `jev-handler` error events join on
+the same keys as `exec-handler` ones.
 
 ## Development
 
