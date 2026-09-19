@@ -8,6 +8,7 @@ members = [
     "primitives/http-source",
     "primitives/jev-handler",
     "primitives/stream-runner",
+    "xtask",
 ]
 
 [workspace.package]
