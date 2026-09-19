@@ -22,12 +22,6 @@ const kindColors = {
   sink: "sink",
 };
 
-const statusColors = {
-  running: null, // use kind color
-  stopped: "stopped",
-  error: "error",
-};
-
 /**
  * Initialize the graph SVG and force simulation.
  */
@@ -82,7 +76,7 @@ function initGraph() {
       d3
         .forceLink()
         .id((d) => d.id)
-        .distance(150)
+        .distance(150),
     )
     .force("charge", d3.forceManyBody().strength(-400))
     .force("center", d3.forceCenter(width / 2, height / 2))
@@ -90,7 +84,7 @@ function initGraph() {
     .on("tick", ticked);
 
   // Handle window resize
-  window.addEventListener("resize", () => {
+  globalThis.addEventListener("resize", () => {
     const newWidth = container.clientWidth;
     const newHeight = container.clientHeight;
     svg.attr("width", newWidth).attr("height", newHeight);
@@ -123,9 +117,13 @@ function updateGraph() {
   }));
 
   // Update links
-  linkSelection = linkGroup.selectAll(".edge").data(edgeData, (d) => `${d.source}-${d.target}-${d.messageType}`);
+  linkSelection = linkGroup.selectAll(".edge").data(
+    edgeData,
+    (d) => `${d.source}-${d.target}-${d.messageType}`,
+  );
 
-  linkSelection.exit().transition().duration(300).attr("stroke-opacity", 0).remove();
+  linkSelection.exit().transition().duration(300).attr("stroke-opacity", 0)
+    .remove();
 
   const linkEnter = linkSelection
     .enter()
@@ -191,8 +189,6 @@ function updateGraph() {
 function ticked() {
   if (linkSelection) {
     linkSelection.attr("d", (d) => {
-      const dx = d.target.x - d.source.x;
-      const dy = d.target.y - d.source.y;
       return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
     });
   }
@@ -311,10 +307,10 @@ function moveTooltip(event) {
 
   // Keep tooltip on screen
   const rect = tooltip.getBoundingClientRect();
-  if (x + rect.width > window.innerWidth) {
+  if (x + rect.width > globalThis.innerWidth) {
     x = event.clientX - rect.width - padding;
   }
-  if (y + rect.height > window.innerHeight) {
+  if (y + rect.height > globalThis.innerHeight) {
     y = event.clientY - rect.height - padding;
   }
 
@@ -328,6 +324,25 @@ function moveTooltip(event) {
 function hideTooltip() {
   const tooltip = document.getElementById("tooltip");
   tooltip.classList.remove("visible");
+}
+
+/**
+ * Show why the graph cannot be trusted, or hide the banner when it can.
+ * An empty or partial graph must not look like a healthy one.
+ */
+function renderHealth(health) {
+  const banner = document.getElementById("health-banner");
+  if (!banner) return;
+
+  if (!health || health.status === "ok") {
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+
+  banner.hidden = false;
+  banner.className = `health-banner ${health.status}`;
+  banner.textContent = health.detail ?? `Topology is ${health.status}`;
 }
 
 /**
@@ -368,6 +383,7 @@ function connectSSE() {
       return pos ? { ...n, x: pos.x, y: pos.y } : n;
     });
     edges = state.edges;
+    renderHealth(state.health);
     updateGraph();
   });
 
@@ -402,6 +418,13 @@ function connectSSE() {
     updateGraph();
   });
 
+  // Handle health updated
+  eventSource.addEventListener("health:updated", (event) => {
+    const health = JSON.parse(event.data);
+    console.log("[SSE] health:updated", health);
+    renderHealth(health);
+  });
+
   // Handle edges updated
   eventSource.addEventListener("edges:updated", (event) => {
     const newEdges = JSON.parse(event.data);
@@ -430,7 +453,10 @@ async function refreshTopology() {
   try {
     const response = await fetch(`${TOPOLOGY_API_URL}/refresh`);
     if (!response.ok) {
-      console.error("[Refresh] Failed to request topology refresh:", response.statusText);
+      console.error(
+        "[Refresh] Failed to request topology refresh:",
+        response.statusText,
+      );
       return;
     }
 
@@ -457,7 +483,10 @@ async function refreshTopologyLocal() {
   try {
     const response = await fetch("/api/topology");
     if (!response.ok) {
-      console.error("[Refresh] Failed to fetch local topology:", response.statusText);
+      console.error(
+        "[Refresh] Failed to fetch local topology:",
+        response.statusText,
+      );
       return;
     }
 
@@ -477,6 +506,7 @@ async function refreshTopologyLocal() {
       return pos ? { ...n, x: pos.x, y: pos.y } : n;
     });
     edges = state.edges;
+    renderHealth(state.health);
     updateGraph();
   } catch (err) {
     console.error("[Refresh] Local error:", err);

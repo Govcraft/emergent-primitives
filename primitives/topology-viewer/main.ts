@@ -13,8 +13,12 @@
 
 import { EmergentSink } from "jsr:@govcraft/emergent@0.13.0";
 import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.13.0";
-import { TopologyGraph } from "./graph.ts";
-import type { TopologyNode } from "./types.ts";
+import {
+  ENGINE_NODE_ID,
+  parseTopologyResponse,
+  TopologyGraph,
+} from "./graph.ts";
+import type { EnginePrimitive, TopologyNode } from "./types.ts";
 
 // Parse command line arguments
 function parseArgs(): { port: number } {
@@ -85,6 +89,45 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// How long the engine gets to answer a topology request
+const TOPOLOGY_TIMEOUT_MS = 5000;
+
+// How often the engine topology is re-read while connected
+const TOPOLOGY_REFRESH_MS = 5000;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Read the current topology from the engine HTTP API. The engine sets
+// EMERGENT_API_PORT for every primitive it starts.
+async function fetchEngineTopology(): Promise<EnginePrimitive[]> {
+  const apiPort = Deno.env.get("EMERGENT_API_PORT") ?? "8891";
+  const url = `http://127.0.0.1:${apiPort}/api/topology`;
+  const resp = await fetch(url, {
+    signal: AbortSignal.timeout(TOPOLOGY_TIMEOUT_MS),
+  });
+  if (!resp.ok) {
+    await resp.body?.cancel();
+    throw new Error(`GET ${url} answered ${resp.status}`);
+  }
+  return parseTopologyResponse(await resp.json());
+}
+
+// Load the engine topology into the graph, or record why it could not be
+// read so the page does not present a partial graph as the whole topology.
+async function refreshFromEngine(
+  name: string,
+  graph: TopologyGraph,
+): Promise<void> {
+  try {
+    graph.handleTopologyRefresh(await fetchEngineTopology());
+  } catch (err) {
+    console.log(`[${name}] Topology request failed: ${errorMessage(err)}`);
+    graph.handleTopologyFailure(errorMessage(err));
+  }
+}
+
 // Subscriptions for system lifecycle events and topology responses
 const SUBSCRIPTIONS = [
   "system.started.*",
@@ -98,60 +141,69 @@ async function connectWithRetry(
   name: string,
   graph: TopologyGraph,
   maxRetries = 30,
-  retryDelayMs = 2000
+  retryDelayMs = 2000,
 ): Promise<void> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[${name}] Connecting to engine (attempt ${attempt}/${maxRetries})...`);
+      console.log(
+        `[${name}] Connecting to engine (attempt ${attempt}/${maxRetries})...`,
+      );
 
       // Connect explicitly and subscribe with our own types
       // (not relying on engine config since we're externally managed)
       const sink = await EmergentSink.connect(name);
 
       try {
-        // Subscribe to real-time updates immediately
-        // Note: Sinks cannot query topology (they can only subscribe, not publish)
-        // Per Emergent architecture, sinks start first so we'll receive
-        // system.started.* events for all handlers and sources as they come online
+        // Subscribe first so no lifecycle event is lost while the topology
+        // request is in flight. Wildcard delivery needs an engine and SDK
+        // that route terminal wildcards, so the graph does not depend on it:
+        // the engine topology is read now and re-read on an interval.
         console.log(`[${name}] Subscribing to: ${SUBSCRIPTIONS.join(", ")}`);
         const stream = await sink.subscribe(SUBSCRIPTIONS);
+        await refreshFromEngine(name, graph);
+        const refreshTimer = setInterval(
+          () => refreshFromEngine(name, graph),
+          TOPOLOGY_REFRESH_MS,
+        );
 
         try {
           for await (const msg of stream) {
             if (msg.messageType === "system.response.topology") {
               // Handle topology refresh response
-              interface TopologyResponse {
-                primitives: Array<{
-                  name: string;
-                  kind: string;
-                  state: string;
-                  publishes: string[];
-                  subscribes: string[];
-                  pid?: number;
-                  error?: string;
-                }>;
+              try {
+                const primitives = parseTopologyResponse(
+                  msg.payloadAs<unknown>(),
+                );
+                console.log(
+                  `[${name}] Topology refresh: ${primitives.length} primitive(s)`,
+                );
+                graph.handleTopologyRefresh(primitives);
+              } catch (err) {
+                console.log(
+                  `[${name}] Ignored topology response: ${errorMessage(err)}`,
+                );
               }
-              const topoPayload = msg.payloadAs<TopologyResponse>();
-              console.log(`[${name}] Topology refresh: ${topoPayload.primitives.length} primitive(s)`);
-              graph.handleTopologyRefresh(topoPayload.primitives);
             } else {
               const payload = msg.payloadAs<SystemEventPayload>();
 
               if (msg.messageType.startsWith("system.started.")) {
                 console.log(
-                  `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
+                  `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`,
                 );
                 graph.handleStarted(payload);
               } else if (msg.messageType.startsWith("system.stopped.")) {
                 console.log(`[${name}] Stopped: ${payload.name}`);
                 graph.handleStopped(payload);
               } else if (msg.messageType.startsWith("system.error.")) {
-                console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
+                console.log(
+                  `[${name}] Error: ${payload.name} - ${payload.error}`,
+                );
                 graph.handleError(payload);
               }
             }
           }
         } finally {
+          clearInterval(refreshTimer);
           stream.close();
         }
       } finally {
@@ -162,8 +214,9 @@ async function connectWithRetry(
       console.log(`[${name}] Engine connection closed`);
       return;
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = errorMessage(err);
       console.log(`[${name}] Connection failed: ${errorMsg}`);
+      graph.handleTopologyFailure(`not connected to the engine (${errorMsg})`);
 
       if (attempt < maxRetries) {
         console.log(`[${name}] Retrying in ${retryDelayMs / 1000}s...`);
@@ -183,7 +236,7 @@ async function main(): Promise<void> {
 
   // Add the engine as a known node (it doesn't emit system.started for itself)
   const engineNode: TopologyNode = {
-    id: "emergent-engine",
+    id: ENGINE_NODE_ID,
     kind: "source", // Engine acts as a source of system.* events
     status: "running",
     publishes: [
@@ -200,30 +253,33 @@ async function main(): Promise<void> {
   console.log(`[${name}] Starting topology viewer on port ${port}`);
 
   // Start HTTP server first (non-blocking)
-  const server = Deno.serve({ port }, (req: Request): Response | Promise<Response> => {
-    const url = new URL(req.url);
-    const path = url.pathname;
+  const server = Deno.serve(
+    { port },
+    (req: Request): Response | Promise<Response> => {
+      const url = new URL(req.url);
+      const path = url.pathname;
 
-    switch (path) {
-      case "/":
-        return readStaticFile("index.html");
-      case "/app.js":
-        return readStaticFile("app.js");
-      case "/style.css":
-        return readStaticFile("style.css");
-      case "/events":
-        return createSSEStream(graph);
-      case "/api/topology":
-        return new Response(JSON.stringify(graph.getFullState()), {
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-          },
-        });
-      default:
-        return new Response("Not Found", { status: 404 });
-    }
-  });
+      switch (path) {
+        case "/":
+          return readStaticFile("index.html");
+        case "/app.js":
+          return readStaticFile("app.js");
+        case "/style.css":
+          return readStaticFile("style.css");
+        case "/events":
+          return createSSEStream(graph);
+        case "/api/topology":
+          return new Response(JSON.stringify(graph.getFullState()), {
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        default:
+          return new Response("Not Found", { status: 404 });
+      }
+    },
+  );
 
   console.log(`[${name}] HTTP server listening on http://localhost:${port}`);
 
@@ -234,4 +290,6 @@ async function main(): Promise<void> {
   await server.shutdown();
 }
 
-main();
+if (import.meta.main) {
+  main();
+}
