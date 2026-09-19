@@ -201,6 +201,167 @@ Timeouts terminate the command's process group as in exec-handler, so a
 fire-and-forget command that outlives its timeout is stopped rather than left
 running unsupervised.
 
+### stream-runner
+
+Emit a JSON collection one item at a time, releasing the next item only once
+the previous one has been acknowledged downstream. The acknowledgement is just
+another event: whatever topic the last stage of the loop publishes.
+
+```bash
+# Stream transactions one at a time, acking on the classifier's output
+stream-runner \
+    --load-topic      batch.load \
+    --publish-as      txn.raw \
+    --ack-topic       txn.entry \
+    --items-key       transactions \
+    --ack-key         txn_id \
+    --ack-timeout-ms  30000 \
+    --on-timeout      skip
+```
+
+**Arguments:**
+- `--load-topic`: Event carrying the JSON collection to stream (default: `stream.load`)
+- `--publish-as`: Topic on which to emit each item (default: `stream.item`)
+- `--ack-topic`: Topic that advances the stream (default: `stream.ack`)
+- `--end-topic`: Topic published when the run finishes (default: `stream.end`)
+- `--rejected-topic`: Topic published when a load is dropped (default: `stream.rejected`)
+- `--timed-out-topic`: Topic published when an ack does not arrive in time (default: `stream.item-timed-out`)
+- `--items-key`: Object key holding the array, ignored when the payload is a bare array (default: `items`)
+- `--ack-key`: Field that must agree between an item and its ack (default: unset, any message advances)
+- `--ack-timeout-ms`: How long an item may wait for its ack (default: unset, it waits forever)
+- `--on-timeout`: `skip` the item or `end` the run when an ack times out (default: `skip`, needs `--ack-timeout-ms`)
+
+**Subscribes:** `--load-topic` and `--ack-topic`
+**Publishes:** `stream.item`, `stream.end`, `stream.rejected`, `stream.item-timed-out` (all configurable)
+
+The four published types are resolved positionally from `EMERGENT_PUBLISHES`,
+so the order of `publishes` in a config is load-bearing: item, end, rejected,
+timed out.
+
+```toml
+[[handlers]]
+name = "batch-runner"
+path = "~/.local/share/emergent/primitives/bin/stream-runner"
+args = [
+  "--load-topic", "batch.load",
+  "--publish-as", "txn.raw",
+  "--ack-topic", "txn.entry",
+  "--items-key", "transactions",
+  "--ack-key", "txn_id",
+  "--ack-timeout-ms", "30000",
+]
+subscribes = ["batch.load", "txn.entry"]
+publishes = ["txn.raw", "batch.done", "batch.rejected", "batch.stalled"]
+```
+
+#### Matching acks to items
+
+Without `--ack-key`, any message on the ack topic advances the stream. That is
+the original behaviour and it is kept, but it means a duplicate ack, a late ack
+from an earlier batch, or an ack for an item that something else injected all
+release the next item early, putting two items in flight.
+
+With `--ack-key <field>`, an ack advances the stream only when `ack[field]`
+equals the same field on the item in flight. Anything else is **ignored and
+logged at WARN**, with both sides of the comparison in the log line. It is
+deliberately not published as an event: a mismatched ack is not a dropped
+input, it is a message addressed to an item that is no longer in flight, and a
+retrying downstream can produce them without bound. The item that actually lost
+its acknowledgement is covered by `--ack-timeout-ms`, which does publish.
+
+The field has to be present and non-null on both sides. Absence does not match
+absence, or an item without the field would be advanced by any message at all,
+which is the behaviour the flag exists to remove. A collection of bare strings
+therefore cannot use `--ack-key`.
+
+#### When an ack never arrives
+
+Without `--ack-timeout-ms` an item waits forever, and because a load that
+arrives mid stream is rejected, one unrouted error topic downstream can retire
+the runner until it is restarted.
+
+`--ack-timeout-ms` bounds the wait. On expiry the item is published on the
+timed out topic and `--on-timeout` decides what happens to the run: `skip`
+abandons the item and emits the next one, `end` abandons the whole run and
+publishes the end event with `incomplete: true`.
+
+Pair `--ack-timeout-ms` with `--ack-key`. Without the key, an ack that arrives
+after its item timed out is indistinguishable from the current item's ack, so it
+advances the stream a second time. With the key it is recognised as stale and
+ignored. Internally each emitted item carries a generation and a timer fires for
+the generation it was armed for, so a timer that fires just after its item was
+acknowledged is a no op rather than a second advance.
+
+#### What it publishes
+
+Each item is published verbatim, so downstream sees exactly what was in the
+collection. The other three carry a fixed shape:
+
+```json
+// stream.end
+{"count": 3, "total": 3, "timed_out": 0, "incomplete": false}
+
+// stream.rejected, reason "busy"
+{"reason": "busy",
+ "detail": "a load arrived while item 2 of 5 was in flight",
+ "hint": null,
+ "items_key": "transactions",
+ "in_flight": {"index": 1, "total": 5},
+ "payload": {"transactions": ["..."]}}
+
+// stream.rejected, reason "bad_shape"
+{"reason": "bad_shape",
+ "detail": "object has no key 'transactions'",
+ "hint": "payload looks like an exec-source envelope; unwrap it before the load topic, ...",
+ "items_key": "transactions",
+ "in_flight": null,
+ "payload": {"command": "list-batch", "stdout": "...", "exit_code": 0}}
+
+// stream.item-timed-out
+{"reason": "ack_timeout", "action": "skip", "timeout_ms": 30000,
+ "index": 1, "total": 5, "item": {"txn_id": "t-2"}}
+```
+
+`count` is how many items were emitted and `total` how many the collection
+held; they differ only when a run ended early. The dropped load is nested under
+`payload` rather than spread, so a router can replay it verbatim without having
+to strip the rejection's own keys back off. `hint` is populated for the most
+common wrong shape, the raw `exec-source` envelope `{command, stdout,
+exit_code}` reaching the load topic, which otherwise looks like nothing
+happening at all.
+
+#### Routing a rejection is topology, not code
+
+The primitive publishes the two reasons and makes no decision about them. A
+`jq` selector splits them, exactly as it splits `jev-handler`'s error kinds:
+
+```toml
+# A collection that cannot be streamed at all. Park it for a human: retrying
+# the same payload fails the same way.
+[[handlers]]
+name = "quarantine-bad-batches"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "batch.rejected", "--publish-as", "batch.quarantined",
+        "--", "jq", "-c", "select(.reason == \"bad_shape\")"]
+subscribes = ["batch.rejected"]
+publishes = ["batch.quarantined"]
+
+# A collection that arrived at a busy moment. The payload is intact, so park it
+# and replay it when the runner is free. Do not wire this straight back to the
+# load topic: the stream is still busy and the rejection would loop.
+[[handlers]]
+name = "park-busy-batches"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "batch.rejected", "--publish-as", "batch.parked",
+        "--", "jq", "-c", "select(.reason == \"busy\") | .payload"]
+subscribes = ["batch.rejected"]
+publishes = ["batch.parked"]
+```
+
+An item that timed out is the same story: `batch.stalled` carries `.item`, so a
+router can send it back through the work loop on its own or hand it to a human,
+without the run it came from being stuck behind it.
+
 ### jev-handler
 
 Subscribe to events, ask the [TypeSafe System One](https://docs.typesafe.ai) API

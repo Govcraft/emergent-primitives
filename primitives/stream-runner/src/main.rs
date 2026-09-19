@@ -31,10 +31,10 @@
 //!
 //! # Messages Published
 //!
-//! - Configurable item type (default: `stream.item`) — one item per ack cycle
-//! - Configurable end type (default: `stream.end`) — `{count, total, timed_out, incomplete}`
-//! - Configurable rejected type (default: `stream.rejected`) — a load that was dropped
-//! - Configurable timeout type (default: `stream.item-timed-out`) — an item whose ack never came
+//! - Configurable item type (default: `stream.item`): one item per ack cycle
+//! - Configurable end type (default: `stream.end`): `{count, total, timed_out, incomplete}`
+//! - Configurable rejected type (default: `stream.rejected`): a load that was dropped
+//! - Configurable timeout type (default: `stream.item-timed-out`): an item whose ack never came
 //!
 //! The four are resolved positionally from `EMERGENT_PUBLISHES` in that order.
 //!
@@ -62,7 +62,7 @@ use stream_runner::machine::{
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::time::{Duration, Instant};
 
-/// Stream Runner — emit collection items one at a time, waiting for downstream ack before advancing.
+/// Stream Runner: emit collection items one at a time, waiting for downstream ack before advancing.
 #[derive(Parser, Debug)]
 #[command(name = "stream-runner")]
 #[command(
