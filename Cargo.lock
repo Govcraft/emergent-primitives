@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "exec-common"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "emergent-client",
  "nix",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "exec-handler"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "exec-sink"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "exec-source"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "http-source"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "axum",
  "clap",
@@ -1092,7 +1092,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jev-handler"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "axum",
  "clap",
@@ -1929,7 +1929,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stream-runner"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "clap",
  "emergent-client",
