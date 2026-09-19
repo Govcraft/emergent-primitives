@@ -25,3 +25,6 @@ hex.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
