@@ -1,4 +1,4 @@
-//! HTTP Source — webhook receiver for Emergent.
+//! HTTP Source: webhook receiver for Emergent.
 //!
 //! Receives HTTP requests and publishes one `http.request` event per request,
 //! with optional HMAC-SHA256 signature validation.

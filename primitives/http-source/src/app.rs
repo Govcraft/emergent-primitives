@@ -1,7 +1,7 @@
 //! The HTTP surface: router, shared state, and the one request handler.
 //!
-//! The handler does as little as it can. Everything it decides — which address
-//! to report, what the payload looks like, whether a signature is good — lives
+//! The handler does as little as it can. Everything it decides (which address
+//! to report, what the payload looks like, whether a signature is good) lives
 //! in [`crate::addr`], [`crate::payload`] and [`crate::signature`] as pure
 //! functions. What is left here is extraction, one branch on the signature, and
 //! the publish.

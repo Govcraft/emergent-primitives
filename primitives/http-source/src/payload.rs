@@ -6,7 +6,7 @@
 //! is one, goes in a sibling `query` field, raw and undecoded.
 //!
 //! The alternative is folding `?a=1` into `path`, and it breaks the field's
-//! only real job. Topologies route on `path` by equality — `select(.path ==
+//! only real job. Topologies route on `path` by equality: `select(.path ==
 //! "/inject")` in an `exec-handler` selector, or a match in a downstream
 //! service. A `path` that sometimes carries a query and sometimes does not
 //! matches for one caller and misses for the next, and the failure is silent.
