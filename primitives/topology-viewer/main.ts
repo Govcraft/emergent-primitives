@@ -8,6 +8,9 @@
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-net main.ts --port 8080
  *
+ * The page is served on 127.0.0.1 unless `--host` says otherwise: it shows
+ * every primitive's name, topics, state and PID, so exposing it is a decision.
+ *
  * `--allow-write` is for the engine socket: Deno asks for read and write
  * access to a Unix socket path before it will connect to it.
  *
@@ -16,6 +19,8 @@
 
 import { EmergentSink } from "jsr:@govcraft/emergent@0.13.0";
 import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.13.0";
+import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
+import type { ListenOptions } from "./args.ts";
 import {
   ENGINE_NODE_ID,
   parseTopologyResponse,
@@ -24,22 +29,16 @@ import {
 import { handleRequest, singleFlight } from "./http.ts";
 import type { EnginePrimitive, TopologyNode } from "./types.ts";
 
-// Parse command line arguments
-function parseArgs(): { port: number } {
-  const args = Deno.args;
-  let port = 8080;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
-      port = parseInt(args[i + 1], 10);
-      if (isNaN(port) || port < 1 || port > 65535) {
-        console.error("Invalid port number");
-        Deno.exit(1);
-      }
-    }
+// Parse the arguments, or say what is wrong with them in one line and exit.
+function listenOptionsOrExit(): ListenOptions {
+  const parsed = parseListenArgs(Deno.args);
+  if (!parsed.ok) {
+    console.error(
+      `${parsed.error}. Usage: topology-viewer [--host HOST] [--port PORT]`,
+    );
+    Deno.exit(1);
   }
-
-  return { port };
+  return parsed.options;
 }
 
 // Get current script directory for static file serving
@@ -64,6 +63,25 @@ async function readStaticFile(filename: string): Promise<Response> {
     });
   } catch {
     return new Response("Not Found", { status: 404 });
+  }
+}
+
+// Start the server, or say in one line why the address could not be bound.
+function serveOrExit(
+  options: Deno.ServeTcpOptions,
+  handler: Deno.ServeHandler,
+): Deno.HttpServer {
+  try {
+    return Deno.serve(options, handler);
+  } catch (err) {
+    console.error(
+      bindFailure(
+        options.hostname ?? "",
+        options.port ?? 0,
+        errorMessage(err),
+      ),
+    );
+    Deno.exit(1);
   }
 }
 
@@ -232,7 +250,7 @@ async function connectWithRetry(
 
 // Main entry point
 async function main(): Promise<void> {
-  const { port } = parseArgs();
+  const { host, port } = listenOptionsOrExit();
   const name = Deno.env.get("EMERGENT_NAME") ?? "topology-viewer";
   const graph = new TopologyGraph();
 
@@ -252,7 +270,7 @@ async function main(): Promise<void> {
   };
   graph.addInitialNode(engineNode);
 
-  console.log(`[${name}] Starting topology viewer on port ${port}`);
+  console.log(`[${name}] Starting topology viewer on ${host} port ${port}`);
 
   // One engine re-read at a time, shared by the interval and by
   // `POST /api/refresh`, so a click landing on top of a tick does not send the
@@ -260,8 +278,18 @@ async function main(): Promise<void> {
   const refresh = singleFlight(() => refreshFromEngine(name, graph));
 
   // Start HTTP server first (non-blocking)
-  const server = Deno.serve(
-    { port },
+  const server = serveOrExit(
+    {
+      hostname: host,
+      port,
+      // Log the address that was bound, not the one that was asked for.
+      onListen: (addr) =>
+        console.log(
+          `[${name}] HTTP server listening on ${
+            listenUrl(addr.hostname, addr.port)
+          }`,
+        ),
+    },
     (req: Request): Promise<Response> =>
       handleRequest(req, {
         state: () => graph.getFullState(),
@@ -270,8 +298,6 @@ async function main(): Promise<void> {
         openEvents: () => createSSEStream(graph),
       }),
   );
-
-  console.log(`[${name}] HTTP server listening on http://localhost:${port}`);
 
   // Connect to engine with retry (runs in background)
   await connectWithRetry(name, graph, refresh);
