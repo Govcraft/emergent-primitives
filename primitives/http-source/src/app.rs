@@ -28,6 +28,7 @@ use serde_json::json;
 
 use crate::addr::{FORWARDED_FOR, resolve_remote_addr};
 use crate::payload::build_payload;
+use crate::route_path::RoutePath;
 use crate::signature::validate_signature;
 
 /// A boxed publish in flight.
@@ -70,9 +71,13 @@ pub struct AppState {
 /// `path` is an exact axum route. It may use capture syntax (`/hook/{id}`,
 /// `/hook/{*rest}`), in which case the published `path` is the concrete path
 /// the client requested, not the pattern.
-pub fn build_router(path: &str, state: Arc<AppState>) -> Router {
+///
+/// `Router::route` panics on a path it cannot register. Taking a [`RoutePath`]
+/// is what keeps that out of reach: one only exists for a path that passed the
+/// same rules.
+pub fn build_router(path: &RoutePath, state: Arc<AppState>) -> Router {
     Router::new()
-        .route(path, any(handle_request))
+        .route(path.as_str(), any(handle_request))
         .with_state(state)
 }
 

@@ -54,6 +54,50 @@ capture syntax:
 The published `path` is always the path the **client requested**, never the
 pattern `--path` was configured with.
 
+### An invalid `--path`
+
+After primitives 0.11.0 the route is checked before the source connects to the
+engine or binds its port. A value the router would refuse prints one line that
+names the value and the rule, and the process exits with status `1`:
+
+```text
+$ http-source --path bad-no-slash
+Invalid --path "bad-no-slash": a route path must start with '/'
+```
+
+On 0.11.0 and earlier the same value reached axum's `Router::route`, which
+panics: the source died at spawn with a backtrace and exit status `101`, and
+`/api/topology` reported only `Exited with status: 101`.
+
+All but the last row are rules that axum 0.8 and its matchit router enforce:
+
+| `--path` | Refused because |
+|----------|-----------------|
+| *(empty)* | a route path cannot be empty, use `/` for the root |
+| `webhook` | a route path must start with `/` |
+| `/hook/:id`, `/hook/*rest` | a segment cannot start with `:` or `*`, the capture syntax before axum 0.8. Write `{id}` and `{*rest}` |
+| `/hook/{id`, `/hook/id}` | unbalanced braces. Write `{{` and `}}` for literal braces |
+| `/hook/{}`, `/hook/{*}` | a capture needs a name |
+| `/hook/{a/b}`, `/hook/{a*b}` | a capture name cannot contain `/` or `*` |
+| `/hook/{id}.json`, `/hook/{a}{b}` | a capture must end its path segment. A literal prefix is fine: `/hook/v-{id}` |
+| `/hook/{*rest}/more` | a `{*wildcard}` must be the end of the path |
+| 26 or more `{name}` captures | the router holds at most 25 named captures per route |
+| `/hook?x=1`, `/hook#top` | a route path cannot contain `?` or `#`. See below |
+
+The last row is not a router rule. axum registers `/hook?x=1` without
+complaint and then matches nothing: the router is shown only the path of a
+request, which ends where the query string starts, and a fragment never leaves
+the client. The source would start, report healthy, and answer `404` to every
+request. The query string is not part of the route. Configure `--path /hook`,
+and every request to `/hook?x=1` is accepted and published with
+`"path": "/hook"` and `"query": "x=1"`, ready for a downstream
+`select(.query == "x=1")`. After primitives 0.11.0 such a path is refused at
+startup like the others. A `?` or `#` inside a capture name (`/hook/{id?}`) is
+only part of the name and is accepted.
+
+Repeating a capture name (`/{id}/{id}`) is accepted: the router allows it, and
+this source never extracts captures, it publishes the concrete path.
+
 ## Events
 
 ### http.request
