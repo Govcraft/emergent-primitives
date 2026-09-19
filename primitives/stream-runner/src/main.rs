@@ -18,10 +18,20 @@
 //! turns inbound messages into machine inputs, and carries out the effects the
 //! machine returns. It decides nothing itself.
 //!
+//! # Nothing Is Dropped In Silence
+//!
+//! A load that cannot be started is published on `rejected_topic` with a
+//! `reason` of `busy` (a stream was already running) or `bad_shape` (the
+//! payload held no array), carrying the load's own payload so a topology can
+//! replay or quarantine it.
+//!
 //! # Messages Published
 //!
 //! - Configurable item type (default: `stream.item`) — one item per ack cycle
 //! - Configurable end type (default: `stream.end`) — final count payload
+//! - Configurable rejected type (default: `stream.rejected`) — a load that was dropped
+//!
+//! The three are resolved positionally from `EMERGENT_PUBLISHES` in that order.
 //!
 //! # Usage
 //!
@@ -38,7 +48,7 @@
 use clap::Parser;
 use emergent_client::types::CausationId;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use stream_runner::machine::{Config, Effect, Ignored, Input, Origin, Publication, State, step};
+use stream_runner::machine::{Config, Effect, IgnoredAck, Input, Origin, Publication, State, step};
 use tokio::signal::unix::{SignalKind, signal};
 
 /// Stream Runner — emit collection items one at a time, waiting for downstream ack before advancing.
@@ -64,6 +74,10 @@ struct Args {
     #[arg(long, default_value = "stream.end")]
     end_topic: String,
 
+    /// Topic published when a load is dropped, with a `busy` or `bad_shape` reason
+    #[arg(long, default_value = "stream.rejected")]
+    rejected_topic: String,
+
     /// JSON object key containing the array to stream (ignored when payload is a bare array)
     #[arg(long, default_value = "items")]
     items_key: String,
@@ -73,6 +87,7 @@ struct Args {
 struct Topics {
     item: String,
     end: String,
+    rejected: String,
 }
 
 /// The async shell: the state machine and its configuration.
@@ -97,21 +112,20 @@ impl Runner {
             Effect::PublishItem(publication) => {
                 publish(handler, &self.topics.item, publication).await;
             }
+            Effect::PublishRejected(publication) => {
+                tracing::warn!(
+                    reason = %publication.payload["reason"],
+                    detail = %publication.payload["detail"],
+                    "Load dropped, publishing on {}",
+                    self.topics.rejected
+                );
+                publish(handler, &self.topics.rejected, publication).await;
+            }
             Effect::PublishCompleted(publication) => {
                 publish(handler, &self.topics.end, publication).await;
             }
-            Effect::LogIgnored(Ignored::AckWhileIdle) => {
+            Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => {
                 tracing::debug!("Received ack while idle, ignoring");
-            }
-            Effect::LogIgnored(Ignored::LoadWhileStreaming { index, total }) => {
-                tracing::warn!(
-                    index,
-                    total,
-                    "Received load while already streaming, ignoring"
-                );
-            }
-            Effect::LogIgnored(Ignored::BadShape { detail }) => {
-                tracing::warn!("Failed to extract items from payload: {detail}");
             }
         }
     }
@@ -119,16 +133,21 @@ impl Runner {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // WARN by default rather than ERROR: a dropped load is a warning, and
+    // under an engine nobody sets RUST_LOG.
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
+        .from_env_lossy();
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let args = Args::parse();
 
-    let publish_types = resolve_publish_types_from_env(&[&args.publish_as, &args.end_topic]);
+    let publish_types =
+        resolve_publish_types_from_env(&[&args.publish_as, &args.end_topic, &args.rejected_topic]);
     let topics = Topics {
         item: publish_types[0].clone(),
         end: publish_types[1].clone(),
+        rejected: publish_types[2].clone(),
     };
 
     let config = Config {

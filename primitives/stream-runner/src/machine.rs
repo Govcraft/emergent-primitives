@@ -10,6 +10,13 @@
 //! The async shell in `main.rs` only interprets effects. Nothing it does can
 //! change what the runner decides, which is the point: the decisions are the
 //! part that was hard to see, and now they are the part that is tested.
+//!
+//! # Failure is data
+//!
+//! A load that cannot be started publishes a rejection carrying the load's own
+//! payload, so a topology can route it back to the load topic once the stream
+//! is free, or to a quarantine when its shape is wrong. Nothing is dropped in
+//! silence.
 
 use emergent_client::types::{CausationId, CorrelationId};
 use serde_json::{Value, json};
@@ -72,23 +79,11 @@ pub struct Publication {
     pub origin: Origin,
 }
 
-/// An input the runner did nothing with.
+/// Why an acknowledgement changed nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Ignored {
-    /// An ack arrived with no stream in flight.
-    AckWhileIdle,
-    /// A load arrived while a stream was already running.
-    LoadWhileStreaming {
-        /// Index of the item in flight.
-        index: usize,
-        /// How many items the running collection holds.
-        total: usize,
-    },
-    /// A load's payload held no array to stream.
-    BadShape {
-        /// What was wrong with the shape.
-        detail: String,
-    },
+pub enum IgnoredAck {
+    /// No stream was in flight.
+    NotStreaming,
 }
 
 /// What the shell should do after a step.
@@ -96,10 +91,12 @@ pub enum Ignored {
 pub enum Effect {
     /// Publish one collection item on the item topic.
     PublishItem(Publication),
+    /// Publish a dropped load on the rejected topic.
+    PublishRejected(Publication),
     /// Publish the run's final count on the end topic.
     PublishCompleted(Publication),
-    /// Report an input that changed nothing.
-    LogIgnored(Ignored),
+    /// An acknowledgement was ignored, and the operator should hear about it.
+    LogIgnoredAck(IgnoredAck),
 }
 
 /// The run in progress.
@@ -162,27 +159,28 @@ pub fn extract_items(payload: &Value, items_key: &str) -> Result<Vec<Value>, Str
 #[must_use]
 pub fn step(config: &Config, state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
-        Input::Load { payload, origin } => on_load(config, state, &payload, origin),
+        Input::Load { payload, origin } => on_load(config, state, payload, origin),
         Input::Ack { payload: _ } => on_ack(state),
     }
 }
 
-fn on_load(config: &Config, state: State, payload: &Value, origin: Origin) -> (State, Vec<Effect>) {
+fn on_load(config: &Config, state: State, payload: Value, origin: Origin) -> (State, Vec<Effect>) {
     if let Some(run) = state.run.as_ref() {
-        let ignored = Ignored::LoadWhileStreaming {
-            index: run.index,
-            total: run.items.len(),
-        };
-        return (state, vec![Effect::LogIgnored(ignored)]);
+        let detail = format!(
+            "a load arrived while item {} of {} was in flight",
+            run.index + 1,
+            run.items.len()
+        );
+        let in_flight = json!({"index": run.index, "total": run.items.len()});
+        let rejection = rejected(config, "busy", &detail, in_flight, payload, origin);
+        return (state, vec![Effect::PublishRejected(rejection)]);
     }
 
-    let items = match extract_items(payload, &config.items_key) {
+    let items = match extract_items(&payload, &config.items_key) {
         Ok(items) => items,
         Err(detail) => {
-            return (
-                state,
-                vec![Effect::LogIgnored(Ignored::BadShape { detail })],
-            );
+            let rejection = rejected(config, "bad_shape", &detail, Value::Null, payload, origin);
+            return (state, vec![Effect::PublishRejected(rejection)]);
         }
     };
 
@@ -207,7 +205,7 @@ fn on_load(config: &Config, state: State, payload: &Value, origin: Origin) -> (S
 fn on_ack(state: State) -> (State, Vec<Effect>) {
     let mut state = state;
     let Some(run) = state.run.take() else {
-        return (state, vec![Effect::LogIgnored(Ignored::AckWhileIdle)]);
+        return (state, vec![Effect::LogIgnoredAck(IgnoredAck::NotStreaming)]);
     };
     let effects = advance(&mut state, run);
     (state, effects)
@@ -241,9 +239,54 @@ fn emit(state: &mut State, run: Run) -> Vec<Effect> {
     effects
 }
 
+/// Build a rejection carrying the load that was dropped.
+///
+/// The load's payload is nested under `payload` rather than spread, so a
+/// downstream router can replay it verbatim onto the load topic without having
+/// to strip the rejection's own keys back off.
+fn rejected(
+    config: &Config,
+    reason: &str,
+    detail: &str,
+    in_flight: Value,
+    payload: Value,
+    origin: Origin,
+) -> Publication {
+    Publication {
+        payload: json!({
+            "reason": reason,
+            "detail": detail,
+            "hint": exec_source_hint(&payload),
+            "items_key": config.items_key,
+            "in_flight": in_flight,
+            "payload": payload,
+        }),
+        origin,
+    }
+}
+
 /// The end event's payload.
 fn end_payload(count: usize) -> Value {
     json!({ "count": count })
+}
+
+/// Name the most common wrong shape instead of making the operator guess.
+///
+/// An `exec-source` payload is `{command, stdout, exit_code}`, so a topology
+/// that wires a command's output straight into the load topic hands this
+/// primitive an object with no array in it.
+fn exec_source_hint(payload: &Value) -> Value {
+    let is_exec_envelope = payload
+        .as_object()
+        .and_then(|obj| obj.get("stdout"))
+        .is_some_and(Value::is_string);
+    if is_exec_envelope {
+        json!(
+            "payload looks like an exec-source envelope; unwrap it before the load topic, for example with an exec-handler running `jq -c '.stdout | fromjson'`"
+        )
+    } else {
+        Value::Null
+    }
 }
 
 #[cfg(test)]
@@ -262,10 +305,11 @@ mod tests {
     fn summarise(effect: &Effect) -> String {
         match effect {
             Effect::PublishItem(p) => format!("item:{}", label(&p.payload)),
+            Effect::PublishRejected(p) => {
+                format!("rejected:{}", p.payload["reason"].as_str().unwrap_or("?"))
+            }
             Effect::PublishCompleted(p) => format!("completed:count={}", p.payload["count"]),
-            Effect::LogIgnored(Ignored::AckWhileIdle) => "ignored:not-streaming".to_string(),
-            Effect::LogIgnored(Ignored::LoadWhileStreaming { .. }) => "ignored:busy".to_string(),
-            Effect::LogIgnored(Ignored::BadShape { .. }) => "ignored:bad-shape".to_string(),
+            Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => "ignored:not-streaming".to_string(),
         }
     }
 
@@ -331,13 +375,13 @@ mod tests {
     }
 
     #[test]
-    fn a_load_while_busy_is_ignored_and_the_run_continues() {
+    fn a_load_while_busy_is_rejected_and_the_run_continues() {
         run(Case {
             name: "load while busy",
             config: Config::default(),
             steps: vec![
                 (load(json!([item("a"), item("b")])), vec!["item:a"]),
-                (load(json!([item("c")])), vec!["ignored:busy"]),
+                (load(json!([item("c")])), vec!["rejected:busy"]),
                 (ack(json!(null)), vec!["item:b"]),
                 (ack(json!(null)), vec!["completed:count=2"]),
             ],
@@ -346,21 +390,88 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_with_no_array_is_ignored() {
+    fn a_payload_with_no_array_is_rejected() {
         run(Case {
             name: "bad shape",
             config: Config::default(),
             steps: vec![
                 (
                     load(json!({"command": "ls", "stdout": "[]", "exit_code": 0})),
-                    vec!["ignored:bad-shape"],
+                    vec!["rejected:bad_shape"],
                 ),
-                (load(json!("not a collection")), vec!["ignored:bad-shape"]),
-                (load(json!({"other": [1]})), vec!["ignored:bad-shape"]),
-                (load(json!({"items": "no"})), vec!["ignored:bad-shape"]),
+                (load(json!("not a collection")), vec!["rejected:bad_shape"]),
+                (load(json!({"other": [1]})), vec!["rejected:bad_shape"]),
+                (load(json!({"items": "no"})), vec!["rejected:bad_shape"]),
             ],
             ends_in_flight: None,
         });
+    }
+
+    #[test]
+    fn a_rejection_carries_the_dropped_load_and_the_run_in_flight() {
+        let config = Config::default();
+        let (state, _) = step(&config, State::new(), load(json!([item("a"), item("b")])));
+        let dropped = json!({"items": [item("c")], "batch": 7});
+        let (_, effects) = step(&config, state, load(dropped.clone()));
+
+        let [Effect::PublishRejected(rejection)] = effects.as_slice() else {
+            panic!("expected exactly one rejection, got {effects:?}");
+        };
+        assert_eq!(rejection.payload["reason"], json!("busy"));
+        assert_eq!(rejection.payload["payload"], dropped);
+        assert_eq!(
+            rejection.payload["in_flight"],
+            json!({"index": 0, "total": 2})
+        );
+        assert_eq!(rejection.payload["items_key"], json!("items"));
+        assert_eq!(rejection.payload["hint"], Value::Null);
+        assert!(
+            rejection.payload["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("item 1 of 2")
+        );
+    }
+
+    #[test]
+    fn a_rejected_exec_source_envelope_says_what_to_do_about_it() {
+        let envelope = json!({"command": "list-batch", "stdout": "{\"items\":[]}", "exit_code": 0});
+        let (_, effects) = step(&Config::default(), State::new(), load(envelope.clone()));
+
+        let [Effect::PublishRejected(rejection)] = effects.as_slice() else {
+            panic!("expected exactly one rejection, got {effects:?}");
+        };
+        assert_eq!(rejection.payload["reason"], json!("bad_shape"));
+        assert_eq!(rejection.payload["payload"], envelope);
+        assert_eq!(rejection.payload["in_flight"], Value::Null);
+        assert!(
+            rejection.payload["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exec-source envelope")
+        );
+    }
+
+    #[test]
+    fn a_rejection_is_caused_by_the_load_it_dropped() {
+        let config = Config::default();
+        let (state, _) = step(&config, State::new(), load(json!([item("a")])));
+        let second = Origin {
+            causation_id: CausationId::new(),
+            correlation_id: Some(CorrelationId::new()),
+        };
+        let (_, effects) = step(
+            &config,
+            state,
+            Input::Load {
+                payload: json!([item("b")]),
+                origin: second.clone(),
+            },
+        );
+        let [Effect::PublishRejected(rejection)] = effects.as_slice() else {
+            panic!("expected one rejection, got {effects:?}");
+        };
+        assert_eq!(rejection.origin, second);
     }
 
     #[test]
