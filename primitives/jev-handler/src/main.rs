@@ -47,8 +47,13 @@
 //!
 //! Every failure publishes an error event; nothing is ever dropped silently.
 //! The `error.kind` field is the contract a downstream router selects on:
-//! `auth`, `invalid_request`, `rate_limited`, `server_error`, `transport`,
-//! `timeout`, `bad_response`, `answer_contract`, `state_not_found`.
+//! `auth`, `billing`, `invalid_request`, `rate_limited`, `server_error`,
+//! `transport`, `timeout`, `bad_response`, `answer_contract`,
+//! `state_not_found`.
+//!
+//! `billing` is the one that must not be quarantined: a `402` means the
+//! organization is out of API credit, so the item is fine and only a human
+//! adding credit unblocks it.
 //!
 //! # Tracing
 //!

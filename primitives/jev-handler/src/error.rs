@@ -129,7 +129,11 @@ pub struct HttpFailure {
     pub attempts: u32,
     /// The response body, truncated by the payload assembler.
     pub body: String,
-    /// The `detail` array of a FastAPI-style validation body, when present.
+    /// The `detail` of a structured error body, when present.
+    ///
+    /// It arrives as an array for a FastAPI-style validation error and as an
+    /// object for a single-cause error such as a 402; both are carried through
+    /// as JSON rather than left buried in the raw body.
     pub detail: Option<serde_json::Value>,
     /// The `x-typesafe-request-id` response header, when present.
     pub request_id: Option<String>,
@@ -142,6 +146,10 @@ pub struct HttpFailure {
 /// page a human on `auth`, requeue `rate_limited`, and quarantine
 /// `invalid_request` — which means the questions file is wrong, so retrying the
 /// item would only fail again.
+///
+/// `billing` is the variant that looks fatal but is not: the request was
+/// well-formed and the item is fine, so it is held for a human to add credit
+/// and then requeued, never quarantined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestFailure {
     /// `--state-pointer` did not resolve in this message's payload.
@@ -151,7 +159,13 @@ pub enum RequestFailure {
     },
     /// The API rejected the credentials (401).
     Auth(HttpFailure),
-    /// The API rejected the request body (422, or any other non-429 4xx).
+    /// The organization has no API credit left (402).
+    ///
+    /// The request itself was fine, so the item is worth keeping: only a human
+    /// adding credit unblocks it.
+    Billing(HttpFailure),
+    /// The API rejected the request body (422, or any other 4xx that is not
+    /// 401, 402, or 429).
     InvalidRequest(HttpFailure),
     /// The API rate limit was exhausted (429).
     RateLimited(HttpFailure),
@@ -196,6 +210,7 @@ impl RequestFailure {
         match self {
             Self::StateNotFound { .. } => "state_not_found",
             Self::Auth(_) => "auth",
+            Self::Billing(_) => "billing",
             Self::InvalidRequest(_) => "invalid_request",
             Self::RateLimited(_) => "rate_limited",
             Self::ServerError(_) => "server_error",
@@ -259,6 +274,7 @@ impl RequestFailure {
     fn http(&self) -> Option<&HttpFailure> {
         match self {
             Self::Auth(http)
+            | Self::Billing(http)
             | Self::InvalidRequest(http)
             | Self::RateLimited(http)
             | Self::ServerError(http) => Some(http),
@@ -279,6 +295,11 @@ impl fmt::Display for RequestFailure {
             Self::Auth(http) => {
                 write!(f, "the API rejected the credentials (HTTP {})", http.status)
             }
+            Self::Billing(http) => write!(
+                f,
+                "the organization is out of TypeSafe API credit (HTTP {}); add credit to resume",
+                http.status
+            ),
             Self::InvalidRequest(http) => {
                 write!(f, "the API rejected the request (HTTP {})", http.status)
             }
@@ -328,6 +349,7 @@ mod tests {
             }
             .kind(),
             RequestFailure::Auth(http(401)).kind(),
+            RequestFailure::Billing(http(402)).kind(),
             RequestFailure::InvalidRequest(http(422)).kind(),
             RequestFailure::RateLimited(http(429)).kind(),
             RequestFailure::ServerError(http(529)).kind(),
@@ -364,6 +386,18 @@ mod tests {
         assert_eq!(failure.attempts(), Some(3));
         assert_eq!(failure.request_id(), Some("req_abc"));
         assert_eq!(failure.body(), Some("body"));
+    }
+
+    #[test]
+    fn billing_is_a_status_failure_like_any_other() {
+        let failure = RequestFailure::Billing(http(402));
+        assert_eq!(failure.kind(), "billing");
+        assert_eq!(failure.status(), Some(402));
+        assert_eq!(failure.attempts(), Some(3));
+        assert_eq!(failure.request_id(), Some("req_abc"));
+        assert_eq!(failure.body(), Some("body"));
+        // The message must send the operator somewhere, not just restate 402.
+        assert!(failure.to_string().contains("credit"));
     }
 
     #[test]

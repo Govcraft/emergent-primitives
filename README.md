@@ -312,13 +312,25 @@ carried under `input` instead.
            "request_id": "req_2f8c1d...", "body": "…", "detail": null}}
 ```
 
-`error.kind` is the contract a router selects on. It is one of `auth`,
-`invalid_request`, `rate_limited`, `server_error`, `transport`, `timeout`,
-`bad_response`, `answer_contract`, `state_not_found` — enough to page a human on
-`auth`, requeue `rate_limited`, and quarantine `invalid_request`, which means
-the questions file is wrong and retrying the item would fail the same way. A
-`422` additionally surfaces the API's own `detail` array as structured JSON, so
-a router can see which question was rejected.
+`error.kind` is the contract a router selects on:
+
+| `error.kind` | What happened | What to do with the item |
+|---|---|---|
+| `auth` | The credentials were rejected (`401`) | Page a human; the key is wrong or revoked |
+| `billing` | The organization is out of API credit (`402`) | **Page a human, then hold and requeue the item — do not quarantine it.** The request was well-formed and the item is fine; it succeeds unchanged once credit is added |
+| `invalid_request` | The request body was rejected (`422`, or another `4xx` that is not `401`, `402`, or `429`) | Quarantine; the questions file is wrong and retrying would fail the same way |
+| `rate_limited` | The attempt budget was spent on `429`s | Requeue |
+| `server_error` | The API failed or was overloaded (`5xx`, including `529`) | Requeue |
+| `transport` | DNS, connection, TLS, or a per-attempt timeout | Requeue |
+| `timeout` | The whole-message `--timeout` budget elapsed | Requeue |
+| `bad_response` | A `2xx` body that is not the documented envelope | Page a human; the vendor's contract moved |
+| `answer_contract` | A well-formed response that does not answer the questions asked | Page a human; the vendor's contract moved |
+| `state_not_found` | `--state-pointer` did not resolve in the payload | Quarantine; the upstream payload shape is wrong |
+
+The API's own `detail` is surfaced as structured JSON rather than buried in the
+body string, in both the shapes it arrives in: the array a `422` sends, so a
+router can see which question was rejected, and the object a `402` sends —
+`{"error_type": "billing_error", "message": "…"}`.
 
 Error bodies are truncated to 2 KiB and may echo the state that was sent. That
 is the operator's own data rather than a secret, but it does land in the event

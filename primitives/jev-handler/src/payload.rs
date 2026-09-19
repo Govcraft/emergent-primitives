@@ -67,7 +67,9 @@ pub fn error_payload(input: &Value, failure: &RequestFailure, context: &FailureC
 /// `kind` is the contract that keeps routing out of this primitive: a `jq`
 /// router pages a human on `auth`, requeues `rate_limited`, and quarantines
 /// `invalid_request`, which means the questions file is wrong and retrying the
-/// item would only fail the same way.
+/// item would only fail the same way. `billing` also pages a human, but the
+/// item is held and requeued rather than quarantined: it will succeed unchanged
+/// once credit is added.
 #[must_use]
 pub fn error_detail(failure: &RequestFailure, context: &FailureContext) -> Value {
     json!({
@@ -102,10 +104,12 @@ pub fn truncate_body(body: &str) -> String {
     format!("{}… (truncated)", &body[..end])
 }
 
-/// Pull the structured `detail` out of a FastAPI-style validation body.
+/// Pull the structured `detail` out of an error body.
 ///
-/// A 422 says which question the API rejected, and a router can only act on
-/// that if it arrives as JSON rather than as a string of JSON. Any other body
+/// A 422 says which question the API rejected and a 402 says the credit balance
+/// is empty; a router can only act on either if it arrives as JSON rather than
+/// as a string of JSON. Both shapes are kept — the validation array and the
+/// single-cause object — because the API uses `detail` for both. Any other body
 /// shape yields `None` and the truncated raw body carries the information
 /// instead.
 #[must_use]
@@ -156,6 +160,22 @@ mod tests {
             body: r#"{"detail":[{"type":"missing","loc":["body","questions","q","criteria"],"msg":"Field required"}]}"#.to_string(),
             detail: extract_detail(r#"{"detail":[{"type":"missing","loc":["body","questions","q","criteria"],"msg":"Field required"}]}"#),
             request_id: Some("req_zz".to_string()),
+        }
+    }
+
+    /// The body the live API returns when the credit balance is empty.
+    ///
+    /// Its `detail` is an object rather than the validation array, which is the
+    /// shape this primitive used to drop.
+    const BILLING_BODY: &str = r#"{"detail":{"error_type":"billing_error","message":"Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing"}}"#;
+
+    fn billing() -> HttpFailure {
+        HttpFailure {
+            status: 402,
+            attempts: 1,
+            body: BILLING_BODY.to_string(),
+            detail: extract_detail(BILLING_BODY),
+            request_id: Some("req_billing".to_string()),
         }
     }
 
@@ -281,6 +301,7 @@ mod tests {
                 pointer: "/data".to_string(),
             },
             RequestFailure::Auth(http(401)),
+            RequestFailure::Billing(billing()),
             RequestFailure::InvalidRequest(http(422)),
             RequestFailure::RateLimited(http(429)),
             RequestFailure::ServerError(http(529)),
@@ -314,6 +335,7 @@ mod tests {
         let expected = [
             "state_not_found",
             "auth",
+            "billing",
             "invalid_request",
             "rate_limited",
             "server_error",
@@ -349,6 +371,36 @@ mod tests {
         assert_eq!(payload["error"]["detail"][0]["loc"][1], "questions");
         // The raw body is kept alongside the structured form.
         assert!(payload["error"]["body"].is_string());
+        Ok(())
+    }
+
+    #[test]
+    fn a_billing_body_surfaces_its_object_detail_as_json() -> Result<(), ConfigError> {
+        let endpoint = endpoint()?;
+        let model = ModelName::default();
+        let context = FailureContext {
+            endpoint: &endpoint,
+            model: &model,
+        };
+        let payload = error_payload(
+            &json!({"issue": 42}),
+            &RequestFailure::Billing(billing()),
+            &context,
+        );
+
+        assert_eq!(payload["error"]["kind"], "billing");
+        assert_eq!(payload["error"]["status"], 402);
+        assert_eq!(payload["error"]["attempts"], 1);
+        // An object `detail` reaches a router as JSON, not as a string of JSON
+        // and not dropped for failing to be the validation array.
+        assert!(payload["error"]["detail"].is_object());
+        assert_eq!(payload["error"]["detail"]["error_type"], "billing_error");
+        assert_eq!(
+            payload["error"]["detail"]["message"],
+            "Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing"
+        );
+        // The item itself is untouched: this failure is about the account.
+        assert_eq!(payload["issue"], 42);
         Ok(())
     }
 

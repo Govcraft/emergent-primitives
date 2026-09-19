@@ -46,8 +46,9 @@ pub enum RetryDecision {
 /// Whether a status is worth trying again.
 ///
 /// `429` and every `5xx` (including TypeSafe's `529 Overloaded`) are transient.
-/// Any other `4xx` means the request is wrong — a bad key, a malformed
-/// questions file — and would fail identically on every attempt.
+/// Any other `4xx` needs something outside this process to change — a bad key,
+/// a malformed questions file, an empty credit balance — and would fail
+/// identically on every attempt.
 #[must_use]
 pub fn is_retryable(code: u16) -> bool {
     code == 429 || code >= 500
@@ -155,7 +156,7 @@ mod tests {
 
     #[test]
     fn a_client_error_is_fatal_on_the_first_attempt() {
-        for code in [400, 401, 403, 404, 422] {
+        for code in [400, 401, 402, 403, 404, 422] {
             assert_eq!(
                 decide_retry(&status(code), 1, &policy(), SEED),
                 RetryDecision::Fatal,

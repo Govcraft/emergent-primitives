@@ -43,6 +43,9 @@ const ANSWERED: &str = r#"{"model":"jev-1.13.0",
 
 const VALIDATION_BODY: &str = r#"{"detail":[{"type":"missing","loc":["body","questions","kind","criteria"],"msg":"Field required"}]}"#;
 
+/// The body the live API returns when the organization's credit is exhausted.
+const BILLING_BODY: &str = r#"{"detail":{"error_type":"billing_error","message":"Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing"}}"#;
+
 /// One scripted response.
 #[derive(Clone)]
 struct Reply {
@@ -309,6 +312,29 @@ async fn an_unauthorized_response_is_not_retried() -> Result<(), String> {
 
     assert_eq!(failure.kind(), "auth");
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_exhausted_credit_balance_is_not_retried_and_names_the_billing_problem()
+-> Result<(), String> {
+    let (mock, url) = serve(vec![Reply::status(402, BILLING_BODY)]).await?;
+
+    let failure = client(&url, 2_000)?
+        .ask(&body()?, "msg_1", &policy(4), &questions()?)
+        .await
+        .err()
+        .ok_or_else(|| "a 402 should fail".to_string())?;
+
+    // Retrying cannot add credit, so the budget is not spent on it.
+    assert_eq!(failure.kind(), "billing");
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(failure.status(), Some(402));
+    assert_eq!(failure.attempts(), Some(1));
+    assert_eq!(
+        failure.detail().and_then(|detail| detail.get("error_type")),
+        Some(&json!("billing_error"))
+    );
     Ok(())
 }
 

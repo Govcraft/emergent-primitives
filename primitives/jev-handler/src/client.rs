@@ -187,9 +187,12 @@ impl JevClient {
 
 /// Classify a non-2xx status into the failure a router can act on.
 ///
-/// A 4xx that is neither 401 nor 429 means the request itself is wrong — in
-/// practice a questions file the API rejected — so it is `invalid_request`
-/// regardless of which 4xx it is.
+/// `402` is kept apart from the rest of the 4xx range because it is the one
+/// client error the item is not to blame for: the request was well-formed and
+/// the organization is simply out of credit, so the item is held rather than
+/// quarantined. Every other 4xx that is neither 401 nor 429 means the request
+/// itself is wrong — in practice a questions file the API rejected — so it is
+/// `invalid_request` regardless of which 4xx it is.
 fn status_failure(attempt: &Attempt, attempts: u32) -> RequestFailure {
     let http = HttpFailure {
         status: attempt.status,
@@ -201,6 +204,7 @@ fn status_failure(attempt: &Attempt, attempts: u32) -> RequestFailure {
 
     match attempt.status {
         401 => RequestFailure::Auth(http),
+        402 => RequestFailure::Billing(http),
         429 => RequestFailure::RateLimited(http),
         status if status >= 500 => RequestFailure::ServerError(http),
         _ => RequestFailure::InvalidRequest(http),
@@ -249,6 +253,7 @@ mod tests {
     #[test]
     fn statuses_map_to_the_kinds_a_router_selects_on() {
         assert_eq!(status_failure(&attempt(401, ""), 1).kind(), "auth");
+        assert_eq!(status_failure(&attempt(402, ""), 1).kind(), "billing");
         assert_eq!(status_failure(&attempt(429, ""), 4).kind(), "rate_limited");
         assert_eq!(status_failure(&attempt(500, ""), 4).kind(), "server_error");
         assert_eq!(status_failure(&attempt(529, ""), 4).kind(), "server_error");
@@ -281,6 +286,28 @@ mod tests {
             Some(
                 &json!({"type":"missing","loc":["body","questions","q","criteria"],"msg":"Field required"})
             )
+        );
+    }
+
+    #[test]
+    fn a_billing_body_surfaces_its_object_detail_rather_than_dropping_it() {
+        // The body the live API returns when the credit balance is empty. Its
+        // `detail` is an object, not the validation array, and it must survive
+        // as JSON so a router can read `error_type` without parsing a string.
+        let body = r#"{"detail":{"error_type":"billing_error","message":"Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing"}}"#;
+        let failure = status_failure(&attempt(402, body), 1);
+
+        assert_eq!(failure.kind(), "billing");
+        assert_eq!(failure.status(), Some(402));
+        assert_eq!(
+            failure.detail().and_then(|detail| detail.get("error_type")),
+            Some(&json!("billing_error"))
+        );
+        assert_eq!(
+            failure.detail().and_then(|detail| detail.get("message")),
+            Some(&json!(
+                "Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing"
+            ))
         );
     }
 
