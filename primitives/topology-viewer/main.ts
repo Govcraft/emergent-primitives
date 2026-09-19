@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-env --allow-read --allow-net
+#!/usr/bin/env -S deno run --allow-env --allow-read --allow-write --allow-net
 /**
  * Topology Viewer Sink - Real-time workflow visualization.
  *
@@ -6,7 +6,10 @@
  * force-directed graph visualization via HTTP/SSE.
  *
  * Usage:
- *   deno run --allow-env --allow-read --allow-net main.ts --port 8080
+ *   deno run --allow-env --allow-read --allow-write --allow-net main.ts --port 8080
+ *
+ * `--allow-write` is for the engine socket: Deno asks for read and write
+ * access to a Unix socket path before it will connect to it.
  *
  * The SDK automatically handles system.shutdown for graceful shutdown.
  */
