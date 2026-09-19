@@ -52,11 +52,17 @@ http-source --port 8080 --path /webhook
 
 **Arguments:**
 - `--port`, `-p`: Port to listen on (default: 8080)
-- `--host`, `-H`: Host to bind (default: 0.0.0.0)
-- `--path`: URL path (default: /)
-- `--secret`, `-s`: HMAC-SHA256 secret for signature validation (env: `HTTP_WEBHOOK_SECRET`)
+- `--host`: Host to bind (default: 0.0.0.0)
+- `--path`: Exact route to accept requests on, axum capture syntax allowed (default: /)
+- `--secret`: HMAC-SHA256 secret for signature validation (env: `HTTP_SOURCE_SECRET`)
+- `--trust-forwarded-for`: Report `remote_addr` from `X-Forwarded-For` instead of the socket peer. Off by default; only safe behind a proxy that overwrites the header
 
 **Publishes:** `http.request`
+
+The payload carries `method`, the requested `path` (without the query string),
+`query` (raw, or `null`), `headers`, `body`, and `remote_addr` (the caller's IP,
+no port). See [the primitive's README](primitives/http-source/) for why `query`
+is a separate field and which address `remote_addr` reports.
 
 ### exec-source
 

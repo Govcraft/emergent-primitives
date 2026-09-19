@@ -20,8 +20,13 @@ Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitiv
 |----------|---------------------|---------|-------------|
 | `-p, --port` | `HTTP_SOURCE_PORT` | `8080` | Port to listen on |
 | `--host` | `HTTP_SOURCE_HOST` | `0.0.0.0` | Host to bind to |
-| `--path` | `HTTP_SOURCE_PATH` | `/` | Path to accept requests on |
+| `--path` | `HTTP_SOURCE_PATH` | `/` | Route to accept requests on |
 | `--secret` | `HTTP_SOURCE_SECRET` | — | HMAC secret for signature validation |
+| `--trust-forwarded-for` | — | off | Report the caller from `X-Forwarded-For` instead of the socket peer |
+
+`--trust-forwarded-for` is a flag with no environment variable, deliberately: a
+bool read from the environment treats `VAR=false` as "set", which is exactly the
+wrong default for a flag that relaxes a trust boundary.
 
 ### emergent.toml
 
@@ -34,6 +39,21 @@ enabled = true
 publishes = ["http.request"]
 ```
 
+## Routing
+
+`--path` is an **exact route, not a prefix**. `--path /inject` serves `/inject`
+and returns `404` for `/inject/extra`. To accept a family of paths, use axum's
+capture syntax:
+
+| `--path` | Matches | Published `path` |
+|----------|---------|------------------|
+| `/inject` | `/inject` | `/inject` |
+| `/hook/{id}` | `/hook/42` | `/hook/42` |
+| `/hook/{*rest}` | `/hook/a/b/c` | `/hook/a/b/c` |
+
+The published `path` is always the path the **client requested**, never the
+pattern `--path` was configured with.
+
 ## Events
 
 ### http.request
@@ -43,15 +63,61 @@ Emitted for each incoming HTTP request.
 ```json
 {
   "method": "POST",
-  "path": "/",
+  "path": "/hook/42",
+  "query": "retry=1",
   "headers": {
     "content-type": "application/json",
     "x-signature": "sha256=..."
   },
-  "body": "{\"event\": \"push\", \"ref\": \"refs/heads/main\"}",
-  "remote_addr": null
+  "body": { "event": "push", "ref": "refs/heads/main" },
+  "remote_addr": "203.0.113.7"
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | string | Request method, uppercase |
+| `path` | string | Requested path, **without** the query string |
+| `query` | string or null | Raw, undecoded query string; `null` when the request had none |
+| `headers` | object | Header names lowercased; headers whose value is not valid UTF-8 are dropped |
+| `body` | any | Parsed JSON when the body is JSON, otherwise the body as a string |
+| `remote_addr` | string | Caller's IP address, no port |
+
+#### Why `query` is separate from `path`
+
+Topologies route on `path` by equality, for example an `exec-handler` running
+`select(.path == "/inject")`. Folding `?a=1` into `path` would make that match
+for one caller and miss for the next, silently. Keeping them apart means `path`
+is stable per endpoint and `query` is available in one piece.
+
+`query` is passed through exactly as it arrived. Percent decoding, repeated keys
+and bare flags have no single right answer, so the decision is left to whoever
+consumes it.
+
+#### What `remote_addr` contains
+
+`remote_addr` is an IP address with no port. The peer's source port identifies a
+connection rather than a caller, and including it only in some deployments would
+make the published shape depend on configuration.
+
+By default it is the socket peer: the other end of the TCP connection. That
+cannot be forged by the client, but behind a reverse proxy it is the proxy, so
+every request looks like it came from the same machine.
+
+With `--trust-forwarded-for`, the **leftmost** entry of the `X-Forwarded-For`
+header is used instead, which is the original client each hop prepends. Entries
+may be bare IPs or carry a port (`203.0.113.7:443`, `[2001:db8::1]:443`); the
+port is dropped either way.
+
+If the header is absent, empty, or its leftmost entry is not an IP address, the
+socket peer is reported. A malformed leftmost entry does **not** fall through to
+the next hop, because the next hop is a proxy and reporting a proxy as the
+caller would be a wrong answer that looks right.
+
+> **`X-Forwarded-For` is client-supplied.** On a directly exposed port, enabling
+> `--trust-forwarded-for` lets any caller name itself, which defeats logging,
+> rate limiting and allow-listing built on this field. Enable it only when a
+> reverse proxy in front of this port overwrites the header.
 
 ## Signature Validation
 
@@ -61,7 +127,7 @@ When `--secret` is provided, requests must include an `X-Signature` header with 
 X-Signature: sha256=<hex-encoded-hmac>
 ```
 
-Requests with missing or invalid signatures return `401 Unauthorized`.
+Requests with missing or invalid signatures return `401 Unauthorized` and publish nothing.
 
 ## Examples
 
@@ -83,6 +149,18 @@ http-source --port 8080 --secret "my-webhook-secret"
 http-source --port 8080 --path "/api/webhook"
 ```
 
+### Behind a reverse proxy
+
+```bash
+http-source --port 8080 --path /inject --trust-forwarded-for
+```
+
+### One endpoint per tenant, routed downstream on `path`
+
+```bash
+http-source --port 8080 --path "/tenant/{id}"
+```
+
 ### TOML: GitHub webhook receiver
 
 ```toml
@@ -99,7 +177,7 @@ publishes = ["http.request"]
 Send a test webhook:
 
 ```bash
-curl -X POST http://localhost:8080/ \
+curl -X POST "http://localhost:8080/?source=manual" \
   -H "Content-Type: application/json" \
   -d '{"event": "test", "data": "hello"}'
 ```
