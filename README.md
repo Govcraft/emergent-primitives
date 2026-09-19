@@ -385,15 +385,43 @@ args = ["-s", "jev.answered", "--publish-as", "triage.needs_review",
 subscribes = ["jev.answered"]
 publishes = ["triage.needs_review"]
 
-# Failures route on kind, not on confidence.
+# Failures route on kind, not on confidence. The three routers are mutually
+# exclusive and together exhaustive: the last one matches by negation, so a kind
+# added in a later release lands somewhere instead of vanishing.
+
+# The item is at fault, or the questions are: retrying fails the same way.
 [[handlers]]
-name = "route-bad-config"
+name = "route-unanswerable"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "jev.error", "--publish-as", "triage.quarantined",
-        "--", "jq", "-c", "select(.error.kind == \"invalid_request\" or .error.kind == \"auth\")"]
+        "--", "jq", "-c", "select(.error.kind | IN(\"invalid_request\", \"state_not_found\"))"]
 subscribes = ["jev.error"]
 publishes = ["triage.quarantined"]
+
+# The item is fine and only a human can unblock it: a rejected key, an empty
+# credit balance, or a vendor contract that moved. Hold it, do not quarantine.
+[[handlers]]
+name = "route-blocked"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.error", "--publish-as", "triage.blocked",
+        "--", "jq", "-c", "select(.error.kind | IN(\"auth\", \"billing\", \"bad_response\", \"answer_contract\"))"]
+subscribes = ["jev.error"]
+publishes = ["triage.blocked"]
+
+# Everything else is transient (rate_limited, server_error, transport, timeout)
+# or not yet known to this topology. Requeue it.
+[[handlers]]
+name = "route-transient"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.error", "--publish-as", "triage.requeued",
+        "--", "jq", "-c", "select(.error.kind | IN(\"invalid_request\", \"state_not_found\", \"auth\", \"billing\", \"bad_response\", \"answer_contract\") | not)"]
+subscribes = ["jev.error"]
+publishes = ["triage.requeued"]
 ```
+
+A subscriber on `triage.blocked` pages a human; one on `triage.requeued`
+republishes the original event after a delay, with an attempt count in the
+payload and a guard that ends the loop.
 
 A `jq -c 'select(...)'` that matches nothing writes nothing and exits 0, which
 `exec-handler` treats as a filter and drops — so a band that does not apply
