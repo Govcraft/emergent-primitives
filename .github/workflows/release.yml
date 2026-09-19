@@ -22,9 +22,29 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo nextest run --no-tests=pass
 
+  quality-deno:
+    name: Quality Gate, Deno (${{ matrix.primitive }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        primitive: [topology-viewer, websocket-handler, sse-sink]
+    defaults:
+      run:
+        working-directory: primitives/${{ matrix.primitive }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno check main.ts
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno test -A --permit-no-files
+
   build:
     name: Build ${{ matrix.primitive }} for ${{ matrix.target }}
-    needs: [quality]
+    needs: [quality, quality-deno]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -118,7 +138,7 @@ jobs:
 
   build-deno:
     name: Build ${{ matrix.primitive }} (Deno) for ${{ matrix.target }}
-    needs: [quality]
+    needs: [quality, quality-deno]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
