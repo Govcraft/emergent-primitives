@@ -327,6 +327,25 @@ function hideTooltip() {
 }
 
 /**
+ * Show why the graph cannot be trusted, or hide the banner when it can.
+ * An empty or partial graph must not look like a healthy one.
+ */
+function renderHealth(health) {
+  const banner = document.getElementById("health-banner");
+  if (!banner) return;
+
+  if (!health || health.status === "ok") {
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+
+  banner.hidden = false;
+  banner.className = `health-banner ${health.status}`;
+  banner.textContent = health.detail ?? `Topology is ${health.status}`;
+}
+
+/**
  * Connect to SSE endpoint with auto-reconnect.
  */
 function connectSSE() {
@@ -364,6 +383,7 @@ function connectSSE() {
       return pos ? { ...n, x: pos.x, y: pos.y } : n;
     });
     edges = state.edges;
+    renderHealth(state.health);
     updateGraph();
   });
 
@@ -396,6 +416,13 @@ function connectSSE() {
       nodes.push(node);
     }
     updateGraph();
+  });
+
+  // Handle health updated
+  eventSource.addEventListener("health:updated", (event) => {
+    const health = JSON.parse(event.data);
+    console.log("[SSE] health:updated", health);
+    renderHealth(health);
   });
 
   // Handle edges updated
@@ -479,6 +506,7 @@ async function refreshTopologyLocal() {
       return pos ? { ...n, x: pos.x, y: pos.y } : n;
     });
     edges = state.edges;
+    renderHealth(state.health);
     updateGraph();
   } catch (err) {
     console.error("[Refresh] Local error:", err);
