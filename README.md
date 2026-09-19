@@ -12,6 +12,7 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 | [`exec-sink`](primitives/exec-sink/) | sink | Pipe event payloads through any executable (fire-and-forget) |
 | [`stream-runner`](primitives/stream-runner/) | handler | Emit a JSON collection one item at a time, waiting for downstream ack before advancing |
 | [`jev-handler`](primitives/jev-handler/) | handler | Ask TypeSafe System One typed questions about event payloads |
+| [`websocket-handler`](primitives/websocket-handler/) | handler | Bidirectional WebSocket bridge: connect, send and receive frames, and learn how each connection ended |
 
 The exec trio covers most use cases without writing code:
 
@@ -617,6 +618,112 @@ or a rejected questions file would fail identically on every one. A
 otherwise a server can pin a concurrency slot for an hour with nothing in the
 logs to explain it. Only the delta-seconds form of `Retry-After` is read; the
 HTTP-date form falls back to computed backoff.
+
+### websocket-handler
+
+Hold one outbound WebSocket connection on behalf of a pipeline. The handler is
+inert until it receives a connect message, so the URL can come from an earlier
+step (Slack Socket Mode, for example, hands out a fresh URL per connection).
+
+```bash
+websocket-handler --prefix ws
+```
+
+**Arguments:**
+- `--prefix`: Message type prefix (default: `ws`). Under the engine the types
+  declared in the topology win, matched by their last segment, so
+  `slack.connect` fills the `connect` role whatever the prefix is.
+
+**Subscribes:**
+- `{prefix}.connect`: open a connection to `url` in the payload. A connection
+  that is already open is closed first.
+- `{prefix}.send`: send the payload as one text frame (a string as is, anything
+  else as JSON).
+- `{prefix}.disconnect`: close the connection.
+
+**Publishes:** `{prefix}.connected`, `{prefix}.frame`, `{prefix}.closed`,
+`{prefix}.disconnected`, `{prefix}.error`
+
+Every event of a connection is caused by the connect message that opened it, so
+`causation_id` plus the `url` in the payload identify the connection.
+
+`{prefix}.frame` carries one field, `data`: the parsed JSON when a text frame
+parses, the raw text otherwise, and base64 for a binary frame.
+
+#### How a connection ends
+
+Every connection publishes exactly one terminal event, never both and never
+twice:
+
+| Event | Meaning | `cause` | Reconnect? |
+|-------|---------|---------|------------|
+| `{prefix}.closed` | The handler was asked to end it | `disconnect` (a disconnect message), `reconnect` (a newer connect message replaced it), `shutdown` (the handler is stopping) | No |
+| `{prefix}.disconnected` | Nobody asked | `remote_close` (the peer sent a close frame), `connection_lost` (the connection dropped with no close frame), `connect_failed` (it never opened) | Yes, if you want it back |
+
+Both carry the same payload:
+
+```json
+{
+  "url": "wss://example.com/socket",
+  "code": 1006,
+  "reason": "",
+  "was_clean": false,
+  "cause": "connection_lost",
+  "opened": true,
+  "error": "Unexpected EOF"
+}
+```
+
+- `code`, `reason`, `was_clean`: the WebSocket close code, close reason and
+  whether the close handshake completed. An ending with no close frame is
+  always reported as `1006`.
+- `cause`: why it ended, as in the table above.
+- `opened`: `false` when the connection failed before it was established.
+- `error`: the first socket error seen on the connection, or `null`.
+
+`{prefix}.error` is diagnostic, not terminal. A dropped connection publishes
+`error` and then `disconnected`, so drive reconnection from `disconnected`
+alone or the flow reconnects twice. An `error` with no terminal event after it
+means no connection existed (a send with nothing connected, or a connect
+message whose URL could not be parsed).
+
+On shutdown the handler closes its connection, waits up to one second for the
+peer to answer, and publishes `closed` before it leaves. A peer that does not
+answer in time is reported with `code` 1006 and `was_clean` false.
+
+Before `disconnected` existed, every ending published `{prefix}.closed`, so a
+remote close could not be told apart from a requested one, and a handler
+shutdown published nothing at all. A topology that reconnects on `closed`
+should subscribe to `disconnected` instead.
+
+#### Reconnecting
+
+Declare `disconnected` next to the other types and route it to whatever
+produces the next connect message:
+
+```toml
+[[handlers]]
+name = "ws"
+path = "~/.local/share/emergent/primitives/bin/websocket-handler"
+args = ["--prefix", "ws"]
+enabled = true
+subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
+publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.disconnected", "ws.error"]
+
+# Fetch a fresh URL and publish it as ws.connect whenever the connection is lost.
+[[handlers]]
+name = "reconnect"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "ws.disconnected", "--publish-as", "ws.connect", "--", "./fetch-ws-url.sh"]
+enabled = true
+subscribes = ["ws.disconnected"]
+publishes = ["ws.connect"]
+```
+
+A topology written before `disconnected` existed does not declare it. The
+handler then publishes it as the sibling of the declared `closed` type
+(`slack.closed` gives `slack.disconnected`), so it stays under the prefix the
+topology already routes on.
 
 ## Envelope Variables
 
