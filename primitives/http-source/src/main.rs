@@ -31,11 +31,22 @@ use clap::Parser;
 use emergent_client::EmergentSource;
 use http_source::app::{AppState, MessagePublisher, build_router};
 use http_source::args::Args;
+use http_source::route_path::RoutePath;
 use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Check the route before anything else. The router panics on a path it
+    // cannot register, and a config typo deserves one line, not a backtrace.
+    let route = match RoutePath::parse(&args.path) {
+        Ok(route) => route,
+        Err(rule) => {
+            eprintln!("Invalid --path {:?}: {rule}", args.path);
+            std::process::exit(1);
+        }
+    };
 
     // Get the source name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "http-source".to_string());
@@ -65,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trust_forwarded_for: args.trust_forwarded_for,
     });
 
-    let app = build_router(&args.path, state);
+    let app = build_router(&route, state);
 
     // Parse socket address
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
