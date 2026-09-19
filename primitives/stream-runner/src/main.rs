@@ -23,7 +23,17 @@
 //! A load that cannot be started is published on `rejected_topic` with a
 //! `reason` of `busy` (a stream was already running) or `bad_shape` (the
 //! payload held no array), carrying the load's own payload so a topology can
-//! replay or quarantine it.
+//! replay or quarantine it. A mismatched ack is logged rather than published:
+//! it is addressed to an item that is no longer in flight, and a retrying
+//! downstream can produce them without bound.
+//!
+//! # Matching Acks To Items
+//!
+//! Without `--ack-key`, any message on the ack topic advances the stream, which
+//! means a duplicate or a late ack releases the next item early. With
+//! `--ack-key <field>`, an ack advances the stream only when `ack[field]`
+//! equals the same field on the item in flight; anything else is logged and
+//! ignored.
 //!
 //! # Messages Published
 //!
@@ -81,6 +91,12 @@ struct Args {
     /// JSON object key containing the array to stream (ignored when payload is a bare array)
     #[arg(long, default_value = "items")]
     items_key: String,
+
+    /// Field that must agree between an item and its ack for the stream to advance
+    ///
+    /// Unset, any message on the ack topic advances the stream.
+    #[arg(long)]
+    ack_key: Option<String>,
 }
 
 /// Where each kind of published message goes.
@@ -127,6 +143,14 @@ impl Runner {
             Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => {
                 tracing::debug!("Received ack while idle, ignoring");
             }
+            Effect::LogIgnoredAck(IgnoredAck::KeyMismatch { key, expected, got }) => {
+                tracing::warn!(
+                    key = %key,
+                    expected = %json_or_absent(expected.as_ref()),
+                    got = %json_or_absent(got.as_ref()),
+                    "Ack does not match the item in flight, ignoring"
+                );
+            }
         }
     }
 }
@@ -152,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config {
         items_key: args.items_key.clone(),
+        ack_key: args.ack_key.clone(),
     };
 
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "stream-runner".to_string());
@@ -230,6 +255,11 @@ async fn publish(handler: &EmergentHandler, message_type: &str, publication: Pub
     if let Err(e) = handler.publish(msg).await {
         tracing::warn!("Failed to publish {message_type}: {e}");
     }
+}
+
+/// Render an optional JSON value for a log line.
+fn json_or_absent(value: Option<&serde_json::Value>) -> String {
+    value.map_or_else(|| "<absent>".to_string(), serde_json::Value::to_string)
 }
 
 /// Resolve publish message types from the `EMERGENT_PUBLISHES` environment variable.

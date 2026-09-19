@@ -30,12 +30,18 @@ use serde_json::{Value, json};
 pub struct Config {
     /// Object key holding the array to stream, when a load is an object.
     pub items_key: String,
+    /// Field that must agree between an item and its acknowledgement.
+    ///
+    /// `None` keeps the original behaviour: any message on the ack topic
+    /// advances the stream.
+    pub ack_key: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             items_key: "items".to_string(),
+            ack_key: None,
         }
     }
 }
@@ -65,7 +71,8 @@ pub enum Input {
     },
     /// A message arrived on the ack topic.
     Ack {
-        /// The acknowledgement's payload.
+        /// The acknowledgement's payload, matched against the item in flight
+        /// when [`Config::ack_key`] is set.
         payload: Value,
     },
 }
@@ -84,6 +91,15 @@ pub struct Publication {
 pub enum IgnoredAck {
     /// No stream was in flight.
     NotStreaming,
+    /// [`Config::ack_key`] disagreed between the ack and the item in flight.
+    KeyMismatch {
+        /// The configured key.
+        key: String,
+        /// The value the item in flight carries, when it carries one.
+        expected: Option<Value>,
+        /// The value the acknowledgement carried, when it carried one.
+        got: Option<Value>,
+    },
 }
 
 /// What the shell should do after a step.
@@ -96,6 +112,11 @@ pub enum Effect {
     /// Publish the run's final count on the end topic.
     PublishCompleted(Publication),
     /// An acknowledgement was ignored, and the operator should hear about it.
+    ///
+    /// This is a log line rather than an event on purpose. A mismatched ack is
+    /// not a dropped input: it is a message addressed to an item that is no
+    /// longer in flight, and in a fan-in topology a retrying downstream can
+    /// produce them without bound.
     LogIgnoredAck(IgnoredAck),
 }
 
@@ -160,7 +181,7 @@ pub fn extract_items(payload: &Value, items_key: &str) -> Result<Vec<Value>, Str
 pub fn step(config: &Config, state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Load { payload, origin } => on_load(config, state, payload, origin),
-        Input::Ack { payload: _ } => on_ack(state),
+        Input::Ack { payload } => on_ack(config, state, &payload),
     }
 }
 
@@ -202,10 +223,27 @@ fn on_load(config: &Config, state: State, payload: Value, origin: Origin) -> (St
     (state, effects)
 }
 
-fn on_ack(state: State) -> (State, Vec<Effect>) {
+fn on_ack(config: &Config, state: State, payload: &Value) -> (State, Vec<Effect>) {
+    let Some(run) = state.run.as_ref() else {
+        return (state, vec![Effect::LogIgnoredAck(IgnoredAck::NotStreaming)]);
+    };
+
+    if let Some(key) = config.ack_key.as_deref() {
+        let expected = field(run.items.get(run.index), key);
+        let got = field(Some(payload), key);
+        if !matched(expected.as_ref(), got.as_ref()) {
+            let mismatch = IgnoredAck::KeyMismatch {
+                key: key.to_string(),
+                expected,
+                got,
+            };
+            return (state, vec![Effect::LogIgnoredAck(mismatch)]);
+        }
+    }
+
     let mut state = state;
     let Some(run) = state.run.take() else {
-        return (state, vec![Effect::LogIgnoredAck(IgnoredAck::NotStreaming)]);
+        return (state, Vec::new());
     };
     let effects = advance(&mut state, run);
     (state, effects)
@@ -270,6 +308,23 @@ fn end_payload(count: usize) -> Value {
     json!({ "count": count })
 }
 
+/// Read one top level field, absent for any payload that is not an object.
+fn field(value: Option<&Value>, key: &str) -> Option<Value> {
+    value?.as_object()?.get(key).cloned()
+}
+
+/// Two ack keys agree only when both are present and neither is null.
+///
+/// Absence cannot match absence: an item with no key would otherwise be
+/// advanced by any message at all, which is the behaviour `--ack-key` exists to
+/// remove.
+fn matched(expected: Option<&Value>, got: Option<&Value>) -> bool {
+    match (expected, got) {
+        (Some(a), Some(b)) => !a.is_null() && a == b,
+        _ => false,
+    }
+}
+
 /// Name the most common wrong shape instead of making the operator guess.
 ///
 /// An `exec-source` payload is `{command, stdout, exit_code}`, so a topology
@@ -310,6 +365,7 @@ mod tests {
             }
             Effect::PublishCompleted(p) => format!("completed:count={}", p.payload["count"]),
             Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => "ignored:not-streaming".to_string(),
+            Effect::LogIgnoredAck(IgnoredAck::KeyMismatch { .. }) => "ignored:mismatch".to_string(),
         }
     }
 
@@ -341,6 +397,13 @@ mod tests {
 
     fn ack(payload: Value) -> Input {
         Input::Ack { payload }
+    }
+
+    fn keyed() -> Config {
+        Config {
+            ack_key: Some("id".to_string()),
+            ..Config::default()
+        }
     }
 
     /// One scripted run: every input paired with the effects it must produce.
@@ -475,7 +538,10 @@ mod tests {
     }
 
     #[test]
-    fn any_message_on_the_ack_topic_advances() {
+    fn without_an_ack_key_any_message_advances() {
+        // The original behaviour, kept deliberately: this is what `--ack-key`
+        // exists to replace, and a topology that has not adopted it must not
+        // change under it.
         run(Case {
             name: "unkeyed ack",
             config: Config::default(),
@@ -486,6 +552,92 @@ mod tests {
             ],
             ends_in_flight: None,
         });
+    }
+
+    #[test]
+    fn a_duplicate_ack_does_not_release_a_second_item() {
+        run(Case {
+            name: "duplicate ack",
+            config: keyed(),
+            steps: vec![
+                (
+                    load(json!([item("a"), item("b"), item("c")])),
+                    vec!["item:a"],
+                ),
+                (ack(item("a")), vec!["item:b"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("b")), vec!["item:c"]),
+            ],
+            ends_in_flight: Some("c"),
+        });
+    }
+
+    #[test]
+    fn an_ack_for_an_injected_item_is_ignored() {
+        run(Case {
+            name: "injected item",
+            config: keyed(),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a"]),
+                (ack(item("injected")), vec!["ignored:mismatch"]),
+                (ack(json!({"id": null})), vec!["ignored:mismatch"]),
+                (ack(json!(["a"])), vec!["ignored:mismatch"]),
+                (ack(item("a")), vec!["item:b"]),
+            ],
+            ends_in_flight: Some("b"),
+        });
+    }
+
+    #[test]
+    fn a_late_ack_from_a_previous_batch_is_ignored() {
+        run(Case {
+            name: "late ack across batches",
+            config: keyed(),
+            steps: vec![
+                (load(json!([item("a")])), vec!["item:a"]),
+                (ack(item("a")), vec!["completed:count=1"]),
+                (ack(item("a")), vec!["ignored:not-streaming"]),
+                (load(json!([item("b"), item("c")])), vec!["item:b"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("b")), vec!["item:c"]),
+            ],
+            ends_in_flight: Some("c"),
+        });
+    }
+
+    #[test]
+    fn an_item_without_the_ack_key_never_advances() {
+        // Documented in the README: `--ack-key` requires the field on both
+        // sides, so a collection of bare values needs `--ack-timeout-ms` to
+        // make progress. Absence must not match absence, or any message at all
+        // would advance the stream.
+        run(Case {
+            name: "item lacks the ack key",
+            config: keyed(),
+            steps: vec![
+                (load(json!(["a", "b"])), vec!["item:\"a\""]),
+                (ack(json!({"id": "a"})), vec!["ignored:mismatch"]),
+                (ack(json!("a")), vec!["ignored:mismatch"]),
+            ],
+            ends_in_flight: Some("\"a\""),
+        });
+    }
+
+    #[test]
+    fn a_mismatch_reports_both_sides_of_the_comparison() {
+        let config = keyed();
+        let (state, _) = step(&config, State::new(), load(json!([item("a")])));
+        let (_, effects) = step(&config, state, ack(json!({"id": "b"})));
+
+        let [Effect::LogIgnoredAck(IgnoredAck::KeyMismatch { key, expected, got })] =
+            effects.as_slice()
+        else {
+            panic!("expected exactly one mismatch, got {effects:?}");
+        };
+        assert_eq!(key, "id");
+        assert_eq!(expected.as_ref(), Some(&json!("a")));
+        assert_eq!(got.as_ref(), Some(&json!("b")));
     }
 
     #[test]
@@ -505,7 +657,7 @@ mod tests {
     fn an_ack_while_idle_is_ignored() {
         run(Case {
             name: "idle ack",
-            config: Config::default(),
+            config: keyed(),
             steps: vec![(ack(item("a")), vec!["ignored:not-streaming"])],
             ends_in_flight: None,
         });
@@ -517,6 +669,7 @@ mod tests {
             name: "items key",
             config: Config {
                 items_key: "transactions".to_string(),
+                ..Config::default()
             },
             steps: vec![
                 (
