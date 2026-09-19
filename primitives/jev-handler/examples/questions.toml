@@ -1,0 +1,49 @@
+# jev-handler questions file
+#
+# Every question is asked about every message, in one request. The map key is
+# the question id: the answer comes back under the same key, and downstream
+# `jq` routers select on it as `.answers.<id>`. Ids are therefore restricted to
+# [A-Za-z_][A-Za-z0-9_]* so `.answers.kind` always works without quoting.
+#
+# The id is never sent to the model. All of the meaning goes in `instructions`
+# and `criteria`.
+#
+# This file covers all three System One question types.
+
+# noul — a yes/no judgement. The answer is a bare probability of "yes" in
+# 0..=1, with no separate confidence. `criteria` is optional; when present it
+# describes the two poles and may only use the keys "true" and "false".
+[questions.lure]
+type = "noul"
+instructions = "Does this message try to get the reader to click a link, open an attachment, or reply with information?"
+criteria = { "true" = "There is something concrete to act on: a link, an attachment, or a request for a reply.", "false" = "The message is informational only; there is nothing to act on." }
+
+# A noul without criteria is fine when the question speaks for itself.
+[questions.names_a_deadline]
+type = "noul"
+instructions = "Does the message state a specific date, time, or deadline?"
+
+# choice — one option out of a defined set. `criteria` is required: a map of
+# option to rubric description, with at least two options. The answer carries
+# the chosen option, a confidence, and the full probability distribution.
+[questions.kind]
+type = "choice"
+instructions = "What kind of message is this?"
+
+[questions.kind.criteria]
+phish = "An attempt to obtain credentials, payment, or sensitive information under a false identity."
+cold_pitch = "An unsolicited sales or partnership approach from a real sender."
+vendor_notice = "A legitimate operational notice from a service the organisation already uses."
+personal = "Ordinary correspondence from a known individual."
+
+# score — a position along an ordered rubric. `criteria` is required: an
+# ordered array of at least two level descriptions. Order is the meaning, and
+# the answer may land between levels, so treat it as a float.
+[questions.pressure]
+type = "score"
+instructions = "How much time pressure does the message apply to the reader?"
+criteria = [
+  "No deadline or urgency of any kind is expressed.",
+  "A soft deadline or mild encouragement to respond promptly.",
+  "Explicit urgency: act now or lose access, face a penalty, or miss out.",
+]

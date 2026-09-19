@@ -6,6 +6,7 @@ members = [
     "primitives/exec-sink",
     "primitives/exec-source",
     "primitives/http-source",
+    "primitives/jev-handler",
     "primitives/stream-runner",
 ]
 
