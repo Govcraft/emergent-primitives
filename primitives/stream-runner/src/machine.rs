@@ -5,21 +5,51 @@
 //! should carry out. It performs no IO, owns no clock, and holds no handle to
 //! the engine, so every rule below is reachable from a unit test: a duplicate
 //! ack, an ack that belongs to a previous batch, a load that arrives mid
-//! stream, a payload whose shape cannot be streamed.
+//! stream, a timer that fires for an item that was already acknowledged.
 //!
-//! The async shell in `main.rs` only interprets effects. Nothing it does can
-//! change what the runner decides, which is the point: the decisions are the
-//! part that was hard to see, and now they are the part that is tested.
+//! # Why a generation counter
+//!
+//! An item's timer outlives the item. If item 3 is acknowledged a millisecond
+//! before its timer fires, the firing must not skip item 4. Every emitted item
+//! therefore carries a `generation`, monotonic for the life of the process, and
+//! [`Effect::ArmTimer`] carries the generation of the item it was armed for. A
+//! [`Input::TimerFired`] whose generation is not the one in flight is a no-op.
+//! That is the only ordering guarantee this primitive needs, and it holds
+//! across runs as well as within one.
 //!
 //! # Failure is data
 //!
-//! A load that cannot be started publishes a rejection carrying the load's own
-//! payload, so a topology can route it back to the load topic once the stream
-//! is free, or to a quarantine when its shape is wrong. Nothing is dropped in
-//! silence.
+//! Nothing is dropped in silence. A load that cannot be started publishes a
+//! rejection carrying the load's own payload, so a topology can route it back
+//! to the load topic once the stream is free, or to a quarantine when its shape
+//! is wrong. An item whose acknowledgement never arrives publishes a timeout
+//! carrying the item, so the run either moves on or ends, but never stalls.
 
+use clap::ValueEnum;
 use emergent_client::types::{CausationId, CorrelationId};
 use serde_json::{Value, json};
+
+/// What the runner does when an item's acknowledgement does not arrive in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+pub enum OnTimeout {
+    /// Abandon the item and emit the next one, continuing the run.
+    #[default]
+    Skip,
+    /// Abandon the whole run and publish the end event as incomplete.
+    End,
+}
+
+impl OnTimeout {
+    /// The value written into a published `action` field.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::End => "end",
+        }
+    }
+}
 
 /// Everything the state machine needs from the command line.
 ///
@@ -35,6 +65,12 @@ pub struct Config {
     /// `None` keeps the original behaviour: any message on the ack topic
     /// advances the stream.
     pub ack_key: Option<String>,
+    /// How long an emitted item may wait for its acknowledgement.
+    ///
+    /// `None` keeps the original behaviour: an item waits forever.
+    pub ack_timeout_ms: Option<u64>,
+    /// What a timeout does to the run.
+    pub on_timeout: OnTimeout,
 }
 
 impl Default for Config {
@@ -42,6 +78,8 @@ impl Default for Config {
         Self {
             items_key: "items".to_string(),
             ack_key: None,
+            ack_timeout_ms: None,
+            on_timeout: OnTimeout::Skip,
         }
     }
 }
@@ -74,6 +112,11 @@ pub enum Input {
         /// The acknowledgement's payload, matched against the item in flight
         /// when [`Config::ack_key`] is set.
         payload: Value,
+    },
+    /// A timer armed by [`Effect::ArmTimer`] elapsed.
+    TimerFired {
+        /// The generation the timer was armed for.
+        generation: u64,
     },
 }
 
@@ -109,14 +152,27 @@ pub enum Effect {
     PublishItem(Publication),
     /// Publish a dropped load on the rejected topic.
     PublishRejected(Publication),
+    /// Publish an item whose acknowledgement never arrived, on the timeout topic.
+    PublishTimedOut(Publication),
     /// Publish the run's final count on the end topic.
     PublishCompleted(Publication),
+    /// Arm a timer for the item just emitted.
+    ///
+    /// An earlier timer is superseded rather than cancelled: a stale firing is
+    /// already a no-op, so the shell never has to reason about cancellation.
+    ArmTimer {
+        /// The generation the timer belongs to.
+        generation: u64,
+        /// How long to wait before firing.
+        timeout_ms: u64,
+    },
     /// An acknowledgement was ignored, and the operator should hear about it.
     ///
     /// This is a log line rather than an event on purpose. A mismatched ack is
     /// not a dropped input: it is a message addressed to an item that is no
     /// longer in flight, and in a fan-in topology a retrying downstream can
-    /// produce them without bound.
+    /// produce them without bound. The item that lost its acknowledgement is
+    /// covered by [`Config::ack_timeout_ms`], which does publish an event.
     LogIgnoredAck(IgnoredAck),
 }
 
@@ -126,12 +182,18 @@ struct Run {
     items: Vec<Value>,
     /// Index of the item currently in flight.
     index: usize,
+    /// Generation of the item currently in flight.
+    generation: u64,
+    /// How many items have been abandoned to a timeout so far.
+    timed_out: usize,
     origin: Origin,
 }
 
 /// The runner's entire state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct State {
+    /// The generation the next emitted item will carry. Never reused.
+    next_generation: u64,
     run: Option<Run>,
 }
 
@@ -154,12 +216,19 @@ impl State {
         let run = self.run.as_ref()?;
         run.items.get(run.index)
     }
+
+    /// The generation of the item currently awaiting acknowledgement, if any.
+    #[must_use]
+    pub fn generation(&self) -> Option<u64> {
+        self.run.as_ref().map(|run| run.generation)
+    }
 }
 
 /// Extract the items array from a load payload.
 ///
 /// A bare array is the collection. An object is looked up under `items_key`.
-/// Anything else is a shape this primitive cannot stream.
+/// Anything else is a shape this primitive cannot stream, and the `Err` string
+/// is what an operator reads in the rejection event.
 ///
 /// # Errors
 ///
@@ -177,11 +246,16 @@ pub fn extract_items(payload: &Value, items_key: &str) -> Result<Vec<Value>, Str
 }
 
 /// Advance the state machine by one input.
+///
+/// The returned effects are ordered: a timeout publishes the abandoned item
+/// before whatever the run does next, so the event store reads in the order
+/// things happened.
 #[must_use]
 pub fn step(config: &Config, state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Load { payload, origin } => on_load(config, state, payload, origin),
         Input::Ack { payload } => on_ack(config, state, &payload),
+        Input::TimerFired { generation } => on_timer(config, state, generation),
     }
 }
 
@@ -207,7 +281,7 @@ fn on_load(config: &Config, state: State, payload: Value, origin: Origin) -> (St
 
     if items.is_empty() {
         let completed = Publication {
-            payload: end_payload(0),
+            payload: end_payload(0, 0, 0, false),
             origin,
         };
         return (state, vec![Effect::PublishCompleted(completed)]);
@@ -217,9 +291,11 @@ fn on_load(config: &Config, state: State, payload: Value, origin: Origin) -> (St
     let run = Run {
         items,
         index: 0,
+        generation: 0,
+        timed_out: 0,
         origin,
     };
-    let effects = emit(&mut state, run);
+    let effects = emit(config, &mut state, run);
     (state, effects)
 }
 
@@ -245,34 +321,88 @@ fn on_ack(config: &Config, state: State, payload: &Value) -> (State, Vec<Effect>
     let Some(run) = state.run.take() else {
         return (state, Vec::new());
     };
-    let effects = advance(&mut state, run);
+    let effects = advance(config, &mut state, run, 0);
+    (state, effects)
+}
+
+fn on_timer(config: &Config, state: State, generation: u64) -> (State, Vec<Effect>) {
+    // A timer for an item that was already acknowledged, or for a run that has
+    // since ended, changes nothing. This is the guard that makes "timeout then
+    // late ack" safe from either direction.
+    if state.generation() != Some(generation) {
+        return (state, Vec::new());
+    }
+
+    let mut state = state;
+    let Some(run) = state.run.take() else {
+        return (state, Vec::new());
+    };
+
+    let timeout_ms = config.ack_timeout_ms.unwrap_or_default();
+    let item = run.items.get(run.index).cloned().unwrap_or(Value::Null);
+    let timed_out = Publication {
+        payload: json!({
+            "reason": "ack_timeout",
+            "action": config.on_timeout.as_str(),
+            "timeout_ms": timeout_ms,
+            "index": run.index,
+            "total": run.items.len(),
+            "item": item,
+        }),
+        origin: run.origin.clone(),
+    };
+    let mut effects = vec![Effect::PublishTimedOut(timed_out)];
+
+    match config.on_timeout {
+        OnTimeout::Skip => effects.extend(advance(config, &mut state, run, 1)),
+        OnTimeout::End => {
+            let completed = Publication {
+                payload: end_payload(run.index + 1, run.items.len(), run.timed_out + 1, true),
+                origin: run.origin,
+            };
+            effects.push(Effect::PublishCompleted(completed));
+        }
+    }
+
     (state, effects)
 }
 
 /// Move past the item in flight: emit the next one, or end the run.
-fn advance(state: &mut State, run: Run) -> Vec<Effect> {
+fn advance(config: &Config, state: &mut State, run: Run, timed_out: usize) -> Vec<Effect> {
     let mut run = run;
+    run.timed_out += timed_out;
     run.index += 1;
 
     if run.index < run.items.len() {
-        return emit(state, run);
+        return emit(config, state, run);
     }
 
     let completed = Publication {
-        payload: end_payload(run.items.len()),
+        payload: end_payload(run.items.len(), run.items.len(), run.timed_out, false),
         origin: run.origin,
     };
     state.run = None;
     vec![Effect::PublishCompleted(completed)]
 }
 
-/// Publish the item at `run.index` and store the run.
-fn emit(state: &mut State, run: Run) -> Vec<Effect> {
+/// Publish the item at `run.index` under a fresh generation and store the run.
+fn emit(config: &Config, state: &mut State, run: Run) -> Vec<Effect> {
+    let mut run = run;
+    run.generation = state.next_generation;
+    state.next_generation = state.next_generation.saturating_add(1);
+
     let item = run.items.get(run.index).cloned().unwrap_or(Value::Null);
-    let effects = vec![Effect::PublishItem(Publication {
+    let mut effects = vec![Effect::PublishItem(Publication {
         payload: item,
         origin: run.origin.clone(),
     })];
+    if let Some(timeout_ms) = config.ack_timeout_ms {
+        effects.push(Effect::ArmTimer {
+            generation: run.generation,
+            timeout_ms,
+        });
+    }
+
     state.run = Some(run);
     effects
 }
@@ -304,25 +434,17 @@ fn rejected(
 }
 
 /// The end event's payload.
-fn end_payload(count: usize) -> Value {
-    json!({ "count": count })
-}
-
-/// Read one top level field, absent for any payload that is not an object.
-fn field(value: Option<&Value>, key: &str) -> Option<Value> {
-    value?.as_object()?.get(key).cloned()
-}
-
-/// Two ack keys agree only when both are present and neither is null.
 ///
-/// Absence cannot match absence: an item with no key would otherwise be
-/// advanced by any message at all, which is the behaviour `--ack-key` exists to
-/// remove.
-fn matched(expected: Option<&Value>, got: Option<&Value>) -> bool {
-    match (expected, got) {
-        (Some(a), Some(b)) => !a.is_null() && a == b,
-        _ => false,
-    }
+/// `count` is how many items were emitted and `total` how many the collection
+/// held; they differ only when a run ended early. `timed_out` counts the items
+/// that were emitted but never acknowledged.
+fn end_payload(count: usize, total: usize, timed_out: usize, incomplete: bool) -> Value {
+    json!({
+        "count": count,
+        "total": total,
+        "timed_out": timed_out,
+        "incomplete": incomplete,
+    })
 }
 
 /// Name the most common wrong shape instead of making the operator guess.
@@ -341,6 +463,23 @@ fn exec_source_hint(payload: &Value) -> Value {
         )
     } else {
         Value::Null
+    }
+}
+
+/// Read one top level field, absent for any payload that is not an object.
+fn field(value: Option<&Value>, key: &str) -> Option<Value> {
+    value?.as_object()?.get(key).cloned()
+}
+
+/// Two ack keys agree only when both are present and neither is null.
+///
+/// Absence cannot match absence: an item with no key would otherwise be
+/// advanced by any message at all, which is the behaviour `--ack-key` exists to
+/// remove.
+fn matched(expected: Option<&Value>, got: Option<&Value>) -> bool {
+    match (expected, got) {
+        (Some(a), Some(b)) => !a.is_null() && a == b,
+        _ => false,
     }
 }
 
@@ -363,7 +502,15 @@ mod tests {
             Effect::PublishRejected(p) => {
                 format!("rejected:{}", p.payload["reason"].as_str().unwrap_or("?"))
             }
-            Effect::PublishCompleted(p) => format!("completed:count={}", p.payload["count"]),
+            Effect::PublishTimedOut(p) => format!("timed-out:{}", label(&p.payload["item"])),
+            Effect::PublishCompleted(p) => format!(
+                "completed:count={},total={},timed_out={},incomplete={}",
+                p.payload["count"],
+                p.payload["total"],
+                p.payload["timed_out"],
+                p.payload["incomplete"]
+            ),
+            Effect::ArmTimer { generation, .. } => format!("arm:{generation}"),
             Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => "ignored:not-streaming".to_string(),
             Effect::LogIgnoredAck(IgnoredAck::KeyMismatch { .. }) => "ignored:mismatch".to_string(),
         }
@@ -399,9 +546,22 @@ mod tests {
         Input::Ack { payload }
     }
 
+    fn timer(generation: u64) -> Input {
+        Input::TimerFired { generation }
+    }
+
     fn keyed() -> Config {
         Config {
             ack_key: Some("id".to_string()),
+            ..Config::default()
+        }
+    }
+
+    fn keyed_with_timeout(on_timeout: OnTimeout) -> Config {
+        Config {
+            ack_key: Some("id".to_string()),
+            ack_timeout_ms: Some(50),
+            on_timeout,
             ..Config::default()
         }
     }
@@ -437,8 +597,10 @@ mod tests {
         );
     }
 
+    const DONE_2: &str = "completed:count=2,total=2,timed_out=0,incomplete=false";
+
     #[test]
-    fn a_load_while_busy_is_rejected_and_the_run_continues() {
+    fn load_while_busy_is_rejected_and_the_run_continues() {
         run(Case {
             name: "load while busy",
             config: Config::default(),
@@ -446,7 +608,7 @@ mod tests {
                 (load(json!([item("a"), item("b")])), vec!["item:a"]),
                 (load(json!([item("c")])), vec!["rejected:busy"]),
                 (ack(json!(null)), vec!["item:b"]),
-                (ack(json!(null)), vec!["completed:count=2"]),
+                (ack(json!(null)), vec![DONE_2]),
             ],
             ends_in_flight: None,
         });
@@ -468,6 +630,301 @@ mod tests {
             ],
             ends_in_flight: None,
         });
+    }
+
+    #[test]
+    fn without_an_ack_key_any_message_advances() {
+        // The original behaviour, kept deliberately: this is what `--ack-key`
+        // exists to replace, and a topology that has not adopted it must not
+        // change under it.
+        run(Case {
+            name: "unkeyed ack",
+            config: Config::default(),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a"]),
+                (ack(json!({"id": "something-else"})), vec!["item:b"]),
+                (ack(json!({})), vec![DONE_2]),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn a_duplicate_ack_does_not_release_a_second_item() {
+        run(Case {
+            name: "duplicate ack",
+            config: keyed(),
+            steps: vec![
+                (
+                    load(json!([item("a"), item("b"), item("c")])),
+                    vec!["item:a"],
+                ),
+                (ack(item("a")), vec!["item:b"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("b")), vec!["item:c"]),
+            ],
+            ends_in_flight: Some("c"),
+        });
+    }
+
+    #[test]
+    fn an_ack_for_an_injected_item_is_ignored() {
+        run(Case {
+            name: "injected item",
+            config: keyed(),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a"]),
+                (ack(item("injected")), vec!["ignored:mismatch"]),
+                (ack(json!({"id": null})), vec!["ignored:mismatch"]),
+                (ack(json!(["a"])), vec!["ignored:mismatch"]),
+                (ack(item("a")), vec!["item:b"]),
+            ],
+            ends_in_flight: Some("b"),
+        });
+    }
+
+    #[test]
+    fn a_late_ack_from_a_previous_batch_is_ignored() {
+        run(Case {
+            name: "late ack across batches",
+            config: keyed(),
+            steps: vec![
+                (load(json!([item("a")])), vec!["item:a"]),
+                (
+                    ack(item("a")),
+                    vec!["completed:count=1,total=1,timed_out=0,incomplete=false"],
+                ),
+                (ack(item("a")), vec!["ignored:not-streaming"]),
+                (load(json!([item("b"), item("c")])), vec!["item:b"]),
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                (ack(item("b")), vec!["item:c"]),
+            ],
+            ends_in_flight: Some("c"),
+        });
+    }
+
+    #[test]
+    fn a_lost_ack_times_out_and_the_run_skips_on() {
+        run(Case {
+            name: "timeout skip",
+            config: keyed_with_timeout(OnTimeout::Skip),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a", "arm:0"]),
+                (timer(0), vec!["timed-out:a", "item:b", "arm:1"]),
+                (
+                    ack(item("b")),
+                    vec!["completed:count=2,total=2,timed_out=1,incomplete=false"],
+                ),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn a_timeout_followed_by_a_late_ack_does_not_double_advance() {
+        run(Case {
+            name: "timeout then late ack",
+            config: keyed_with_timeout(OnTimeout::Skip),
+            steps: vec![
+                (
+                    load(json!([item("a"), item("b"), item("c")])),
+                    vec!["item:a", "arm:0"],
+                ),
+                (timer(0), vec!["timed-out:a", "item:b", "arm:1"]),
+                // The ack for the abandoned item finally arrives.
+                (ack(item("a")), vec!["ignored:mismatch"]),
+                // And its timer fires a second time for good measure.
+                (timer(0), vec![]),
+                (ack(item("b")), vec!["item:c", "arm:2"]),
+            ],
+            ends_in_flight: Some("c"),
+        });
+    }
+
+    #[test]
+    fn a_timer_for_an_acked_item_is_a_no_op() {
+        run(Case {
+            name: "stale timer",
+            config: keyed_with_timeout(OnTimeout::Skip),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a", "arm:0"]),
+                (ack(item("a")), vec!["item:b", "arm:1"]),
+                (timer(0), vec![]),
+                (
+                    timer(1),
+                    vec![
+                        "timed-out:b",
+                        "completed:count=2,total=2,timed_out=1,incomplete=false",
+                    ],
+                ),
+                (timer(1), vec![]),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn on_timeout_end_abandons_the_rest_of_the_collection() {
+        run(Case {
+            name: "timeout end",
+            config: keyed_with_timeout(OnTimeout::End),
+            steps: vec![
+                (
+                    load(json!([item("a"), item("b"), item("c")])),
+                    vec!["item:a", "arm:0"],
+                ),
+                (
+                    timer(0),
+                    vec![
+                        "timed-out:a",
+                        "completed:count=1,total=3,timed_out=1,incomplete=true",
+                    ],
+                ),
+                (ack(item("a")), vec!["ignored:not-streaming"]),
+                (timer(0), vec![]),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn the_last_item_timing_out_still_completes_the_run() {
+        run(Case {
+            name: "last item times out",
+            config: keyed_with_timeout(OnTimeout::Skip),
+            steps: vec![
+                (load(json!([item("a"), item("b")])), vec!["item:a", "arm:0"]),
+                (ack(item("a")), vec!["item:b", "arm:1"]),
+                (
+                    timer(1),
+                    vec![
+                        "timed-out:b",
+                        "completed:count=2,total=2,timed_out=1,incomplete=false",
+                    ],
+                ),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn a_single_item_collection_that_times_out_under_end_completes() {
+        run(Case {
+            name: "only item times out under end",
+            config: keyed_with_timeout(OnTimeout::End),
+            steps: vec![
+                (load(json!([item("a")])), vec!["item:a", "arm:0"]),
+                (
+                    timer(0),
+                    vec![
+                        "timed-out:a",
+                        "completed:count=1,total=1,timed_out=1,incomplete=true",
+                    ],
+                ),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn an_empty_collection_completes_without_emitting() {
+        run(Case {
+            name: "empty collection",
+            config: Config::default(),
+            steps: vec![
+                (
+                    load(json!([])),
+                    vec!["completed:count=0,total=0,timed_out=0,incomplete=false"],
+                ),
+                (
+                    load(json!({"items": []})),
+                    vec!["completed:count=0,total=0,timed_out=0,incomplete=false"],
+                ),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn an_ack_while_idle_is_ignored() {
+        run(Case {
+            name: "idle ack",
+            config: keyed(),
+            steps: vec![
+                (ack(item("a")), vec!["ignored:not-streaming"]),
+                (timer(0), vec![]),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn a_configured_items_key_selects_the_array() {
+        run(Case {
+            name: "items key",
+            config: Config {
+                items_key: "transactions".to_string(),
+                ..Config::default()
+            },
+            steps: vec![
+                (
+                    load(json!({"transactions": [item("a")], "items": [item("z")]})),
+                    vec!["item:a"],
+                ),
+                (
+                    ack(json!(null)),
+                    vec!["completed:count=1,total=1,timed_out=0,incomplete=false"],
+                ),
+            ],
+            ends_in_flight: None,
+        });
+    }
+
+    #[test]
+    fn an_item_without_the_ack_key_never_advances() {
+        // Documented in the README: `--ack-key` requires the field on both
+        // sides, so a collection of bare values needs `--ack-timeout-ms` to
+        // make progress. Absence must not match absence, or any message at all
+        // would advance the stream.
+        run(Case {
+            name: "item lacks the ack key",
+            config: keyed(),
+            steps: vec![
+                (load(json!(["a", "b"])), vec!["item:\"a\""]),
+                (ack(json!({"id": "a"})), vec!["ignored:mismatch"]),
+                (ack(json!("a")), vec!["ignored:mismatch"]),
+            ],
+            ends_in_flight: Some("\"a\""),
+        });
+    }
+
+    #[test]
+    fn no_timer_is_armed_when_no_timeout_is_configured() {
+        let (_, effects) = step(
+            &Config::default(),
+            State::new(),
+            load(json!([item("a"), item("b")])),
+        );
+        assert_eq!(trace(&effects), vec!["item:a"]);
+    }
+
+    #[test]
+    fn generations_are_never_reused_across_runs() {
+        let config = keyed_with_timeout(OnTimeout::Skip);
+        let mut state = State::new();
+        let mut seen = Vec::new();
+
+        for _ in 0..3 {
+            let (next, _) = step(&config, state, load(json!([item("a")])));
+            state = next;
+            seen.push(state.generation());
+            let (next, _) = step(&config, state, ack(item("a")));
+            state = next;
+        }
+
+        assert_eq!(seen, vec![Some(0), Some(1), Some(2)]);
+        assert!(state.is_idle());
     }
 
     #[test]
@@ -516,115 +973,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rejection_is_caused_by_the_load_it_dropped() {
-        let config = Config::default();
-        let (state, _) = step(&config, State::new(), load(json!([item("a")])));
-        let second = Origin {
-            causation_id: CausationId::new(),
-            correlation_id: Some(CorrelationId::new()),
-        };
-        let (_, effects) = step(
-            &config,
-            state,
-            Input::Load {
-                payload: json!([item("b")]),
-                origin: second.clone(),
-            },
-        );
-        let [Effect::PublishRejected(rejection)] = effects.as_slice() else {
-            panic!("expected one rejection, got {effects:?}");
-        };
-        assert_eq!(rejection.origin, second);
-    }
-
-    #[test]
-    fn without_an_ack_key_any_message_advances() {
-        // The original behaviour, kept deliberately: this is what `--ack-key`
-        // exists to replace, and a topology that has not adopted it must not
-        // change under it.
-        run(Case {
-            name: "unkeyed ack",
-            config: Config::default(),
-            steps: vec![
-                (load(json!([item("a"), item("b")])), vec!["item:a"]),
-                (ack(json!({"id": "something-else"})), vec!["item:b"]),
-                (ack(json!({})), vec!["completed:count=2"]),
-            ],
-            ends_in_flight: None,
-        });
-    }
-
-    #[test]
-    fn a_duplicate_ack_does_not_release_a_second_item() {
-        run(Case {
-            name: "duplicate ack",
-            config: keyed(),
-            steps: vec![
-                (
-                    load(json!([item("a"), item("b"), item("c")])),
-                    vec!["item:a"],
-                ),
-                (ack(item("a")), vec!["item:b"]),
-                (ack(item("a")), vec!["ignored:mismatch"]),
-                (ack(item("a")), vec!["ignored:mismatch"]),
-                (ack(item("b")), vec!["item:c"]),
-            ],
-            ends_in_flight: Some("c"),
-        });
-    }
-
-    #[test]
-    fn an_ack_for_an_injected_item_is_ignored() {
-        run(Case {
-            name: "injected item",
-            config: keyed(),
-            steps: vec![
-                (load(json!([item("a"), item("b")])), vec!["item:a"]),
-                (ack(item("injected")), vec!["ignored:mismatch"]),
-                (ack(json!({"id": null})), vec!["ignored:mismatch"]),
-                (ack(json!(["a"])), vec!["ignored:mismatch"]),
-                (ack(item("a")), vec!["item:b"]),
-            ],
-            ends_in_flight: Some("b"),
-        });
-    }
-
-    #[test]
-    fn a_late_ack_from_a_previous_batch_is_ignored() {
-        run(Case {
-            name: "late ack across batches",
-            config: keyed(),
-            steps: vec![
-                (load(json!([item("a")])), vec!["item:a"]),
-                (ack(item("a")), vec!["completed:count=1"]),
-                (ack(item("a")), vec!["ignored:not-streaming"]),
-                (load(json!([item("b"), item("c")])), vec!["item:b"]),
-                (ack(item("a")), vec!["ignored:mismatch"]),
-                (ack(item("b")), vec!["item:c"]),
-            ],
-            ends_in_flight: Some("c"),
-        });
-    }
-
-    #[test]
-    fn an_item_without_the_ack_key_never_advances() {
-        // Documented in the README: `--ack-key` requires the field on both
-        // sides, so a collection of bare values needs `--ack-timeout-ms` to
-        // make progress. Absence must not match absence, or any message at all
-        // would advance the stream.
-        run(Case {
-            name: "item lacks the ack key",
-            config: keyed(),
-            steps: vec![
-                (load(json!(["a", "b"])), vec!["item:\"a\""]),
-                (ack(json!({"id": "a"})), vec!["ignored:mismatch"]),
-                (ack(json!("a")), vec!["ignored:mismatch"]),
-            ],
-            ends_in_flight: Some("\"a\""),
-        });
-    }
-
-    #[test]
     fn a_mismatch_reports_both_sides_of_the_comparison() {
         let config = keyed();
         let (state, _) = step(&config, State::new(), load(json!([item("a")])));
@@ -641,45 +989,24 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_collection_completes_without_emitting() {
-        run(Case {
-            name: "empty collection",
-            config: Config::default(),
-            steps: vec![
-                (load(json!([])), vec!["completed:count=0"]),
-                (load(json!({"items": []})), vec!["completed:count=0"]),
-            ],
-            ends_in_flight: None,
-        });
-    }
+    fn the_timeout_event_carries_the_item_and_the_action() {
+        let config = keyed_with_timeout(OnTimeout::End);
+        let (state, _) = step(&config, State::new(), load(json!([item("a"), item("b")])));
+        let (_, effects) = step(&config, state, timer(0));
 
-    #[test]
-    fn an_ack_while_idle_is_ignored() {
-        run(Case {
-            name: "idle ack",
-            config: keyed(),
-            steps: vec![(ack(item("a")), vec!["ignored:not-streaming"])],
-            ends_in_flight: None,
-        });
-    }
-
-    #[test]
-    fn a_configured_items_key_selects_the_array() {
-        run(Case {
-            name: "items key",
-            config: Config {
-                items_key: "transactions".to_string(),
-                ..Config::default()
-            },
-            steps: vec![
-                (
-                    load(json!({"transactions": [item("a")], "items": [item("z")]})),
-                    vec!["item:a"],
-                ),
-                (ack(json!(null)), vec!["completed:count=1"]),
-            ],
-            ends_in_flight: None,
-        });
+        let [
+            Effect::PublishTimedOut(timed_out),
+            Effect::PublishCompleted(_),
+        ] = effects.as_slice()
+        else {
+            panic!("expected a timeout then a completion, got {effects:?}");
+        };
+        assert_eq!(timed_out.payload["item"], item("a"));
+        assert_eq!(timed_out.payload["reason"], json!("ack_timeout"));
+        assert_eq!(timed_out.payload["action"], json!("end"));
+        assert_eq!(timed_out.payload["timeout_ms"], json!(50));
+        assert_eq!(timed_out.payload["index"], json!(0));
+        assert_eq!(timed_out.payload["total"], json!(2));
     }
 
     #[test]
@@ -709,6 +1036,28 @@ mod tests {
         };
         assert_eq!(completed.origin, load_origin);
         assert_eq!(completed.origin.correlation_id, Some(correlation));
+    }
+
+    #[test]
+    fn a_rejection_is_caused_by_the_load_it_dropped() {
+        let config = Config::default();
+        let (state, _) = step(&config, State::new(), load(json!([item("a")])));
+        let second = Origin {
+            causation_id: CausationId::new(),
+            correlation_id: Some(CorrelationId::new()),
+        };
+        let (_, effects) = step(
+            &config,
+            state,
+            Input::Load {
+                payload: json!([item("b")]),
+                origin: second.clone(),
+            },
+        );
+        let [Effect::PublishRejected(rejection)] = effects.as_slice() else {
+            panic!("expected one rejection, got {effects:?}");
+        };
+        assert_eq!(rejection.origin, second);
     }
 
     #[test]

@@ -9,23 +9,16 @@
 //! 2. Emit the first item on `publish_as`
 //! 3. Wait for an `ack_topic` event (downstream output = ack)
 //! 4. Emit the next item; repeat until exhausted
-//! 5. Publish `end_topic` with `{"count": N}` when all items have been emitted
-//!
-//! # Structure
-//!
-//! Every decision lives in [`stream_runner::machine`], a pure function over
-//! plain data. This file is the shell around it: it reads the command line,
-//! turns inbound messages into machine inputs, and carries out the effects the
-//! machine returns. It decides nothing itself.
+//! 5. Publish `end_topic` when all items have been emitted
 //!
 //! # Nothing Is Dropped In Silence
 //!
 //! A load that cannot be started is published on `rejected_topic` with a
 //! `reason` of `busy` (a stream was already running) or `bad_shape` (the
 //! payload held no array), carrying the load's own payload so a topology can
-//! replay or quarantine it. A mismatched ack is logged rather than published:
-//! it is addressed to an item that is no longer in flight, and a retrying
-//! downstream can produce them without bound.
+//! replay or quarantine it. An item whose acknowledgement never arrives is
+//! published on `timed_out_topic`, so a broken downstream ends a run instead of
+//! stalling it until the next restart.
 //!
 //! # Matching Acks To Items
 //!
@@ -33,15 +26,17 @@
 //! means a duplicate or a late ack releases the next item early. With
 //! `--ack-key <field>`, an ack advances the stream only when `ack[field]`
 //! equals the same field on the item in flight; anything else is logged and
-//! ignored.
+//! ignored. Pair it with `--ack-timeout-ms` so an item whose ack is genuinely
+//! lost still ends the run.
 //!
 //! # Messages Published
 //!
 //! - Configurable item type (default: `stream.item`) — one item per ack cycle
-//! - Configurable end type (default: `stream.end`) — final count payload
+//! - Configurable end type (default: `stream.end`) — `{count, total, timed_out, incomplete}`
 //! - Configurable rejected type (default: `stream.rejected`) — a load that was dropped
+//! - Configurable timeout type (default: `stream.item-timed-out`) — an item whose ack never came
 //!
-//! The three are resolved positionally from `EMERGENT_PUBLISHES` in that order.
+//! The four are resolved positionally from `EMERGENT_PUBLISHES` in that order.
 //!
 //! # Usage
 //!
@@ -52,14 +47,20 @@
 //!     --publish-as  txn.raw \
 //!     --ack-topic   txn.entry \
 //!     --end-topic   stream.end \
-//!     --items-key   transactions
+//!     --items-key   transactions \
+//!     --ack-key     txn_id \
+//!     --ack-timeout-ms 30000 \
+//!     --on-timeout  skip
 //! ```
 
 use clap::Parser;
 use emergent_client::types::CausationId;
 use emergent_client::{EmergentHandler, EmergentMessage};
-use stream_runner::machine::{Config, Effect, IgnoredAck, Input, Origin, Publication, State, step};
+use stream_runner::machine::{
+    Config, Effect, IgnoredAck, Input, OnTimeout, Origin, Publication, State, step,
+};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::time::{Duration, Instant};
 
 /// Stream Runner — emit collection items one at a time, waiting for downstream ack before advancing.
 #[derive(Parser, Debug)]
@@ -88,6 +89,10 @@ struct Args {
     #[arg(long, default_value = "stream.rejected")]
     rejected_topic: String,
 
+    /// Topic published when an item's acknowledgement does not arrive in time
+    #[arg(long, default_value = "stream.item-timed-out")]
+    timed_out_topic: String,
+
     /// JSON object key containing the array to stream (ignored when payload is a bare array)
     #[arg(long, default_value = "items")]
     items_key: String,
@@ -97,6 +102,18 @@ struct Args {
     /// Unset, any message on the ack topic advances the stream.
     #[arg(long)]
     ack_key: Option<String>,
+
+    /// How long an emitted item may wait for its acknowledgement, in milliseconds
+    ///
+    /// Unset, an item waits forever.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    ack_timeout_ms: Option<u64>,
+
+    /// What a timeout does to the run: skip the item, or end the run
+    ///
+    /// Defaults to skip. Has no effect without --ack-timeout-ms.
+    #[arg(long, value_enum)]
+    on_timeout: Option<OnTimeout>,
 }
 
 /// Where each kind of published message goes.
@@ -104,13 +121,22 @@ struct Topics {
     item: String,
     end: String,
     rejected: String,
+    timed_out: String,
 }
 
-/// The async shell: the state machine and its configuration.
+/// A timer waiting to fire for one emitted item.
+#[derive(Debug, Clone, Copy)]
+struct Armed {
+    generation: u64,
+    deadline: Instant,
+}
+
+/// The async shell: state machine, its configuration, and the one timer.
 struct Runner {
     config: Config,
     topics: Topics,
     state: State,
+    armed: Option<Armed>,
 }
 
 impl Runner {
@@ -137,8 +163,26 @@ impl Runner {
                 );
                 publish(handler, &self.topics.rejected, publication).await;
             }
+            Effect::PublishTimedOut(publication) => {
+                tracing::warn!(
+                    index = %publication.payload["index"],
+                    action = %publication.payload["action"],
+                    "Ack timed out, publishing on {}",
+                    self.topics.timed_out
+                );
+                publish(handler, &self.topics.timed_out, publication).await;
+            }
             Effect::PublishCompleted(publication) => {
                 publish(handler, &self.topics.end, publication).await;
+            }
+            Effect::ArmTimer {
+                generation,
+                timeout_ms,
+            } => {
+                self.armed = Some(Armed {
+                    generation,
+                    deadline: Instant::now() + Duration::from_millis(timeout_ms),
+                });
             }
             Effect::LogIgnoredAck(IgnoredAck::NotStreaming) => {
                 tracing::debug!("Received ack while idle, ignoring");
@@ -157,8 +201,8 @@ impl Runner {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // WARN by default rather than ERROR: a dropped load is a warning, and
-    // under an engine nobody sets RUST_LOG.
+    // WARN by default rather than ERROR: a dropped load and an unmatched ack
+    // are both warnings, and under an engine nobody sets RUST_LOG.
     let filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
         .from_env_lossy();
@@ -166,17 +210,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    let publish_types =
-        resolve_publish_types_from_env(&[&args.publish_as, &args.end_topic, &args.rejected_topic]);
+    if args.on_timeout.is_some() && args.ack_timeout_ms.is_none() {
+        tracing::warn!("--on-timeout has no effect without --ack-timeout-ms; items wait forever");
+    }
+
+    let publish_types = resolve_publish_types_from_env(&[
+        &args.publish_as,
+        &args.end_topic,
+        &args.rejected_topic,
+        &args.timed_out_topic,
+    ]);
     let topics = Topics {
         item: publish_types[0].clone(),
         end: publish_types[1].clone(),
         rejected: publish_types[2].clone(),
+        timed_out: publish_types[3].clone(),
     };
 
     let config = Config {
         items_key: args.items_key.clone(),
         ack_key: args.ack_key.clone(),
+        ack_timeout_ms: args.ack_timeout_ms,
+        on_timeout: args.on_timeout.unwrap_or_default(),
     };
 
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "stream-runner".to_string());
@@ -203,13 +258,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
         topics,
         state: State::new(),
+        armed: None,
     };
 
     loop {
+        let armed = runner.armed;
         tokio::select! {
             _ = sigterm.recv() => {
                 let _ = handler.disconnect().await;
                 break;
+            }
+
+            () = sleep_until(armed.map(|timer| timer.deadline)) => {
+                // Clear first: a stale firing is a no-op in the machine, and an
+                // elapsed deadline left armed would spin the loop.
+                runner.armed = None;
+                if let Some(timer) = armed {
+                    let input = Input::TimerFired { generation: timer.generation };
+                    runner.drive(&handler, input).await;
+                }
             }
 
             msg = stream.next() => match msg {
@@ -243,6 +310,14 @@ fn classify(msg: &EmergentMessage, load_topic: &str, ack_topic: &str) -> Option<
         })
     } else {
         None
+    }
+}
+
+/// Wait for a deadline, or forever when no timer is armed.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
