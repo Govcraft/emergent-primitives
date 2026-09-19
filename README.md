@@ -486,6 +486,9 @@ websocket-handler --prefix ws
 Every event of a connection is caused by the connect message that opened it, so
 `causation_id` plus the `url` in the payload identify the connection.
 
+`{prefix}.frame` carries one field, `data`: the parsed JSON when a text frame
+parses, the raw text otherwise, and base64 for a binary frame.
+
 #### How a connection ends
 
 Every connection publishes exactly one terminal event, never both and never
