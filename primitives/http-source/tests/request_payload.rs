@@ -17,6 +17,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use emergent_client::EmergentMessage;
 use http_source::app::{AppState, MessagePublisher, PublishFuture, build_router};
+use http_source::route_path::RoutePath;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -118,7 +119,11 @@ impl Harness {
             publish_type: "http.request".to_string(),
             trust_forwarded_for: self.trust_forwarded_for,
         });
-        let router = build_router(&self.route, state);
+        let route = match RoutePath::parse(&self.route) {
+            Ok(route) => route,
+            Err(rule) => panic!("{:?} is not a route: {rule}", self.route),
+        };
+        let router = build_router(&route, state);
 
         let mut builder = Request::builder().method("POST").uri(uri);
         for (name, value) in headers {

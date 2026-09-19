@@ -22,6 +22,10 @@ pub struct Args {
     /// `--path '/hook/{id}'` serves `/hook/42` and `--path '/hook/{*rest}'`
     /// serves everything under `/hook/`. The published `path` is always what
     /// the client requested.
+    ///
+    /// A value the router would refuse (no leading `/`, unbalanced braces, the
+    /// `:id` syntax from before axum 0.8) is reported on one line and the
+    /// process exits 1. The README lists the rules.
     #[arg(long, env = "HTTP_SOURCE_PATH", default_value = "/")]
     pub path: String,
 

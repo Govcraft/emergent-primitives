@@ -27,7 +27,7 @@ exec-sink -s alert.fired -- curl -s -X POST -H "Content-Type: application/json" 
 exec-sink -s data.processed -- tee -a /var/log/events.jsonl
 ```
 
-The [topology-viewer](https://github.com/Govcraft/emergent) sink ships with the engine repository.
+The [`topology-viewer`](primitives/topology-viewer/) sink draws the running topology as a live graph; its README covers the page, `GET /api/topology` and `POST /api/refresh`.
 
 ## Installation
 
