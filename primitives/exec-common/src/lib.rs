@@ -3,6 +3,7 @@
 //! Provides:
 //! - `execute_command` / `execute_command_passthrough` — pipe JSON to stdin
 //! - `MessageEnv` — expose envelope fields to the executed command
+//! - `error_payload` / `error_to_json` — identity-preserving error payloads
 //! - `resolve_publish_types_from_env` — read `EMERGENT_PUBLISHES` env var
 
 use emergent_client::EmergentMessage;
@@ -447,15 +448,28 @@ pub async fn execute_command_passthrough(
 /// - A payload with its own `error` key loses it to the reserved one.
 #[must_use]
 pub fn error_to_json(err: &ExecError, payload: &serde_json::Value) -> serde_json::Value {
-    let error = error_detail_to_json(err);
+    error_payload(error_detail_to_json(err), payload)
+}
 
+/// Merge already-rendered failure details with the payload that caused them.
+///
+/// This is the rule [`error_to_json`] applies, factored out so any primitive
+/// that publishes an error event applies the *same* rule rather than a second
+/// copy of it that can drift: reserved `error` key, inbound payload spread
+/// alongside, non-objects carried under `input`.
+///
+/// `detail` is whatever that primitive considers the failure — an exec exit
+/// code and stderr, an HTTP status and response body — so the shape of `error`
+/// stays each primitive's own business while the merge stays shared.
+#[must_use]
+pub fn error_payload(detail: serde_json::Value, payload: &serde_json::Value) -> serde_json::Value {
     match payload {
         serde_json::Value::Object(fields) => {
             let mut merged = fields.clone();
-            merged.insert("error".to_string(), error);
+            merged.insert("error".to_string(), detail);
             serde_json::Value::Object(merged)
         }
-        other => serde_json::json!({ "error": error, "input": other }),
+        other => serde_json::json!({ "error": detail, "input": other }),
     }
 }
 

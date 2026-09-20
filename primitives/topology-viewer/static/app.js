@@ -22,12 +22,6 @@ const kindColors = {
   sink: "sink",
 };
 
-const statusColors = {
-  running: null, // use kind color
-  stopped: "stopped",
-  error: "error",
-};
-
 /**
  * Initialize the graph SVG and force simulation.
  */
@@ -82,7 +76,7 @@ function initGraph() {
       d3
         .forceLink()
         .id((d) => d.id)
-        .distance(150)
+        .distance(150),
     )
     .force("charge", d3.forceManyBody().strength(-400))
     .force("center", d3.forceCenter(width / 2, height / 2))
@@ -90,7 +84,7 @@ function initGraph() {
     .on("tick", ticked);
 
   // Handle window resize
-  window.addEventListener("resize", () => {
+  globalThis.addEventListener("resize", () => {
     const newWidth = container.clientWidth;
     const newHeight = container.clientHeight;
     svg.attr("width", newWidth).attr("height", newHeight);
@@ -123,9 +117,13 @@ function updateGraph() {
   }));
 
   // Update links
-  linkSelection = linkGroup.selectAll(".edge").data(edgeData, (d) => `${d.source}-${d.target}-${d.messageType}`);
+  linkSelection = linkGroup.selectAll(".edge").data(
+    edgeData,
+    (d) => `${d.source}-${d.target}-${d.messageType}`,
+  );
 
-  linkSelection.exit().transition().duration(300).attr("stroke-opacity", 0).remove();
+  linkSelection.exit().transition().duration(300).attr("stroke-opacity", 0)
+    .remove();
 
   const linkEnter = linkSelection
     .enter()
@@ -191,8 +189,6 @@ function updateGraph() {
 function ticked() {
   if (linkSelection) {
     linkSelection.attr("d", (d) => {
-      const dx = d.target.x - d.source.x;
-      const dy = d.target.y - d.source.y;
       return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
     });
   }
@@ -311,10 +307,10 @@ function moveTooltip(event) {
 
   // Keep tooltip on screen
   const rect = tooltip.getBoundingClientRect();
-  if (x + rect.width > window.innerWidth) {
+  if (x + rect.width > globalThis.innerWidth) {
     x = event.clientX - rect.width - padding;
   }
-  if (y + rect.height > window.innerHeight) {
+  if (y + rect.height > globalThis.innerHeight) {
     y = event.clientY - rect.height - padding;
   }
 
@@ -328,6 +324,25 @@ function moveTooltip(event) {
 function hideTooltip() {
   const tooltip = document.getElementById("tooltip");
   tooltip.classList.remove("visible");
+}
+
+/**
+ * Show why the graph cannot be trusted, or hide the banner when it can.
+ * An empty or partial graph must not look like a healthy one.
+ */
+function renderHealth(health) {
+  const banner = document.getElementById("health-banner");
+  if (!banner) return;
+
+  if (!health || health.status === "ok") {
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+
+  banner.hidden = false;
+  banner.className = `health-banner ${health.status}`;
+  banner.textContent = health.detail ?? `Topology is ${health.status}`;
 }
 
 /**
@@ -354,21 +369,7 @@ function connectSSE() {
   eventSource.addEventListener("topology:full", (event) => {
     const state = JSON.parse(event.data);
     console.log("[SSE] topology:full", state);
-
-    // Preserve existing node positions
-    const positionMap = new Map();
-    nodes.forEach((n) => {
-      if (n.x !== undefined) {
-        positionMap.set(n.id, { x: n.x, y: n.y });
-      }
-    });
-
-    nodes = state.nodes.map((n) => {
-      const pos = positionMap.get(n.id);
-      return pos ? { ...n, x: pos.x, y: pos.y } : n;
-    });
-    edges = state.edges;
-    updateGraph();
+    applyFullState(state);
   });
 
   // Handle node added
@@ -402,6 +403,13 @@ function connectSSE() {
     updateGraph();
   });
 
+  // Handle health updated
+  eventSource.addEventListener("health:updated", (event) => {
+    const health = JSON.parse(event.data);
+    console.log("[SSE] health:updated", health);
+    renderHealth(health);
+  });
+
   // Handle edges updated
   eventSource.addEventListener("edges:updated", (event) => {
     const newEdges = JSON.parse(event.data);
@@ -411,14 +419,31 @@ function connectSSE() {
   });
 }
 
-// Configuration - topology-api source endpoint
-// This should match the port configured for the topology-api source
-const TOPOLOGY_API_URL = "http://localhost:8892";
+/**
+ * Replace the drawn graph with a full state from the viewer, keeping the
+ * position of every node that is still there.
+ */
+function applyFullState(state) {
+  const positionMap = new Map();
+  nodes.forEach((n) => {
+    if (n.x !== undefined) {
+      positionMap.set(n.id, { x: n.x, y: n.y });
+    }
+  });
+
+  nodes = state.nodes.map((n) => {
+    const pos = positionMap.get(n.id);
+    return pos ? { ...n, x: pos.x, y: pos.y } : n;
+  });
+  edges = state.edges;
+  renderHealth(state.health);
+  updateGraph();
+}
 
 /**
- * Request a topology refresh via the topology-api source.
- * The source publishes system.request.topology, engine responds with
- * system.response.topology, which the topology-viewer sink receives.
+ * Ask the viewer to re-read the engine topology now, and draw what it
+ * replies with. The viewer answers 502 when the engine read failed; the body
+ * is still a full state whose health says why, so it is drawn either way.
  */
 async function refreshTopology() {
   const refreshBtn = document.getElementById("refresh-btn");
@@ -428,58 +453,21 @@ async function refreshTopology() {
   }
 
   try {
-    const response = await fetch(`${TOPOLOGY_API_URL}/refresh`);
-    if (!response.ok) {
-      console.error("[Refresh] Failed to request topology refresh:", response.statusText);
-      return;
-    }
-
-    const result = await response.json();
-    console.log("[Refresh] Request sent:", result);
-    // The actual topology update will come via SSE when the engine responds
+    const response = await fetch("/api/refresh", { method: "POST" });
+    const state = await response.json();
+    console.log(`[Refresh] ${response.status}`, state);
+    applyFullState(state);
   } catch (err) {
     console.error("[Refresh] Error:", err);
-    // If topology-api is not running, fall back to local state
-    console.log("[Refresh] Falling back to local state");
-    await refreshTopologyLocal();
+    renderHealth({
+      status: "degraded",
+      detail: `The viewer did not answer the refresh request: ${err.message}`,
+    });
   } finally {
     if (refreshBtn) {
       refreshBtn.disabled = false;
       refreshBtn.textContent = "Refresh";
     }
-  }
-}
-
-/**
- * Fall back to local graph state if topology-api is not available.
- */
-async function refreshTopologyLocal() {
-  try {
-    const response = await fetch("/api/topology");
-    if (!response.ok) {
-      console.error("[Refresh] Failed to fetch local topology:", response.statusText);
-      return;
-    }
-
-    const state = await response.json();
-    console.log("[Refresh] Local topology", state);
-
-    // Preserve existing node positions
-    const positionMap = new Map();
-    nodes.forEach((n) => {
-      if (n.x !== undefined) {
-        positionMap.set(n.id, { x: n.x, y: n.y });
-      }
-    });
-
-    nodes = state.nodes.map((n) => {
-      const pos = positionMap.get(n.id);
-      return pos ? { ...n, x: pos.x, y: pos.y } : n;
-    });
-    edges = state.edges;
-    updateGraph();
-  } catch (err) {
-    console.error("[Refresh] Local error:", err);
   }
 }
 

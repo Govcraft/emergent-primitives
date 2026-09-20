@@ -1,0 +1,120 @@
+# Jev Handler Primitive Manifest
+#
+# Requires the TYPESAFE_API_KEY environment variable. The key is read from the
+# environment only; there is no flag for it, so it never appears in argv.
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "jev-handler"
+kind = "handler"
+description = "Subscribe to events, ask TypeSafe System One (Jev) a fixed set of typed questions about each payload, publish the calibrated answers"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["ai", "jev", "typesafe", "classify", "judge", "confidence"]
+
+[messages]
+subscribes = ["*"]
+publishes = ["jev.answered", "jev.error"]
+
+# CLI Arguments
+[[args]]
+name = "subscribe"
+long = "subscribe"
+short = "s"
+required = true
+description = "Message types to subscribe to (can be repeated)"
+
+[[args]]
+name = "questions"
+long = "questions"
+required = true
+description = "Path to the questions file (.toml or .json), read once at startup and asked about every message"
+
+[[args]]
+name = "publish-as"
+long = "publish-as"
+required = false
+description = "Message type for an answered message (default: jev.answered)"
+
+[[args]]
+name = "error-as"
+long = "error-as"
+short = "e"
+required = false
+description = "Message type for a failed message (default: jev.error)"
+
+[[args]]
+name = "model"
+long = "model"
+required = false
+description = "Model alias or pinned model id (default: jev-latest)"
+
+[[args]]
+name = "state-pointer"
+long = "state-pointer"
+required = false
+description = "JSON pointer to the part of the payload sent as state (default: the whole payload)"
+
+[[args]]
+name = "timeout"
+long = "timeout"
+short = "t"
+required = false
+description = "Total budget for one message in milliseconds, retries included (default: 120000)"
+
+[[args]]
+name = "request-timeout"
+long = "request-timeout"
+required = false
+description = "Timeout for a single HTTP attempt in milliseconds (default: 30000)"
+
+[[args]]
+name = "max-concurrent"
+long = "max-concurrent"
+required = false
+description = "Maximum messages in flight at once (default: 1; a task in retry backoff holds its slot)"
+
+[[args]]
+name = "max-attempts"
+long = "max-attempts"
+required = false
+description = "Total attempts per message, including the first (default: 4)"
+
+[[args]]
+name = "retry-base-ms"
+long = "retry-base-ms"
+required = false
+description = "First backoff step in milliseconds, doubled per attempt (default: 500)"
+
+[[args]]
+name = "retry-max-delay-ms"
+long = "retry-max-delay-ms"
+required = false
+description = "Ceiling on a computed backoff in milliseconds (default: 30000)"
+
+[[args]]
+name = "max-retry-after-ms"
+long = "max-retry-after-ms"
+required = false
+description = "Ceiling on a server-supplied Retry-After in milliseconds (default: 60000)"
+
+[[args]]
+name = "endpoint"
+long = "endpoint"
+required = false
+description = "Evaluation endpoint to post to (default: https://api.typesafe.ai/v1/systemone)"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]

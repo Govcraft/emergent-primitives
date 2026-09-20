@@ -48,6 +48,34 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --no-tests=pass
 
+  deno:
+    name: Deno (${{ matrix.primitive }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        primitive: [topology-viewer, websocket-handler, sse-sink]
+    defaults:
+      run:
+        working-directory: primitives/${{ matrix.primitive }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno check main.ts
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno test -A --permit-no-files
+
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run -p xtask -- check --flags
+
   build:
     name: Build
     runs-on: ${{ matrix.os }}

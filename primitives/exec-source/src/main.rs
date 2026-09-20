@@ -54,7 +54,12 @@ struct Args {
     command: String,
 
     /// Command arguments (space-separated).
-    #[arg(short, long, env = "EXEC_SOURCE_ARGS")]
+    ///
+    /// Most arguments start with a hyphen, so the value is taken literally
+    /// rather than read as a flag: `--args "-h"` and `--args=-h` both pass
+    /// `-h` to the command. This takes exactly one value, so a following
+    /// `--interval` is still parsed as this source's own flag.
+    #[arg(short, long, env = "EXEC_SOURCE_ARGS", allow_hyphen_values = true)]
     args: Option<String>,
 
     /// Optional interval in milliseconds for repeated execution (0 = run once).
@@ -350,5 +355,42 @@ mod tests {
         let msg_id = "msg_01h455vb4pex5vsknk084sn02q";
         let resolved = resolve_correlation_id(&args_with(false, Some(msg_id)));
         assert!(resolved.is_err(), "expected a prefix error");
+    }
+
+    #[test]
+    fn a_separate_args_value_may_start_with_a_hyphen() {
+        let parsed = Args::try_parse_from(["exec-source", "--command", "ls", "--args", "-la"]);
+        assert!(parsed.is_ok_and(|a| a.args.as_deref() == Some("-la")));
+    }
+
+    #[test]
+    fn a_single_letter_args_value_is_not_read_as_the_help_flag() {
+        // `-h` is the most common first argument there is. Reading it as
+        // clap's own help flag would print help and exit instead of running
+        // the command.
+        let parsed = Args::try_parse_from(["exec-source", "--command", "df", "--args", "-h"]);
+        assert!(parsed.is_ok_and(|a| a.args.as_deref() == Some("-h")));
+    }
+
+    #[test]
+    fn a_hyphenated_args_value_consumes_only_itself() {
+        // allow_hyphen_values on a single-value option takes exactly one
+        // value, so the flag after it is still this source's own.
+        let parsed = Args::try_parse_from([
+            "exec-source",
+            "--command",
+            "ls",
+            "--args",
+            "-la",
+            "--interval",
+            "5000",
+        ]);
+        assert!(parsed.is_ok_and(|a| a.args.as_deref() == Some("-la") && a.interval == 5000));
+    }
+
+    #[test]
+    fn an_attached_args_value_still_works() {
+        let parsed = Args::try_parse_from(["exec-source", "--command", "df", "--args=-h"]);
+        assert!(parsed.is_ok_and(|a| a.args.as_deref() == Some("-h")));
     }
 }

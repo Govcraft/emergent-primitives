@@ -6,45 +6,89 @@
  * connected SSE clients on the /events endpoint.
  *
  * Usage:
- *   sse-sink --port 8080
+ *   sse-sink --port 8080 --allow-origin http://localhost:3000
+ *   sse-sink --host 0.0.0.0 --port 8080 --allow-origin https://app.example
  *
- * Connect from a browser:
+ * The stream is served on 127.0.0.1 unless `--host` says otherwise. It has no
+ * authentication and by default carries every event in the pipeline, so
+ * putting it on the network is a decision, not a default.
+ *
+ * So is letting a web page read it. A browser hands the stream to a page on
+ * another origin only when the response allows that origin, and the response
+ * does so only for the origins named with `--allow-origin` (repeatable, `*`
+ * for every origin).
+ *
+ * Whatever the address, a request is answered only when the host it names is
+ * an IP address, `localhost`, or a name listed with `--allow-host`
+ * (repeatable): that is what stops a DNS rebinding page, and it is what a
+ * reverse proxy that forwards its own name needs listed.
+ *
+ * Connect from a page served by http://localhost:3000:
  *   const source = new EventSource("http://localhost:8080/events");
  *   source.onmessage = (e) => console.log(JSON.parse(e.data));
  *
  * @module
  */
 
-import { runSink } from "jsr:@govcraft/emergent@0.13.0";
-import type { EmergentMessage } from "jsr:@govcraft/emergent@0.13.0";
+import { runSink } from "@govcraft/emergent";
+import type { EmergentMessage } from "@govcraft/emergent";
+import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
+import type { ListenOptions } from "./args.ts";
+import {
+  ALLOW_ORIGIN_FLAG,
+  describeAllowedOrigins,
+  parseAllowedOrigins,
+} from "./cors.ts";
+import {
+  ALLOW_HOST_FLAG,
+  describeAllowedHosts,
+  parseAllowedHosts,
+} from "./host.ts";
+import { clientStream, handleRequest } from "./http.ts";
+import type { Clients, SinkRules } from "./http.ts";
 
 // ============================================================================
 // CLI
 // ============================================================================
 
-function parseArgs(): { port: number } {
-  const args = Deno.args;
-  let port = 8080;
+const USAGE = "Usage: sse-sink [--host HOST] [--port PORT] " +
+  "[--allow-origin ORIGIN]... [--allow-host NAME]...";
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
-      port = parseInt(args[i + 1], 10);
-      if (isNaN(port) || port < 1 || port > 65535) {
-        console.error("Invalid port number");
-        Deno.exit(1);
-      }
-      i++;
-    }
+// Parse the arguments, or say what is wrong with them in one line and exit.
+function optionsOrExit(): ListenOptions & { rules: SinkRules } {
+  const parsed = parseListenArgs(Deno.args, [
+    ALLOW_ORIGIN_FLAG,
+    ALLOW_HOST_FLAG,
+  ]);
+  if (!parsed.ok) {
+    console.error(`${parsed.error}. ${USAGE}`);
+    Deno.exit(1);
   }
-
-  return { port };
+  const origins = parseAllowedOrigins(parsed.repeated[ALLOW_ORIGIN_FLAG]);
+  if (!origins.ok) {
+    console.error(`${origins.error}. ${USAGE}`);
+    Deno.exit(1);
+  }
+  const hosts = parseAllowedHosts(parsed.repeated[ALLOW_HOST_FLAG]);
+  if (!hosts.ok) {
+    console.error(`${hosts.error}. ${USAGE}`);
+    Deno.exit(1);
+  }
+  return {
+    ...parsed.options,
+    rules: {
+      bound: parsed.options.host,
+      allowedHosts: hosts.hosts,
+      allowedOrigins: origins.allowed,
+    },
+  };
 }
 
 // ============================================================================
 // SSE Server
 // ============================================================================
 
-const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const clients: Clients = new Set();
 const encoder = new TextEncoder();
 
 function broadcast(msg: EmergentMessage): void {
@@ -65,44 +109,11 @@ function broadcast(msg: EmergentMessage): void {
   }
 }
 
-function handleRequest(req: Request): Response {
-  const url = new URL(req.url);
-
-  if (url.pathname === "/events") {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        clients.add(controller);
-      },
-      cancel(controller) {
-        clients.delete(controller);
-      },
-    });
-
-    return new Response(body, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        "connection": "keep-alive",
-        "access-control-allow-origin": "*",
-      },
-    });
-  }
-
-  if (url.pathname === "/health") {
-    return new Response(
-      JSON.stringify({ ok: true, clients: clients.size }),
-      { headers: { "content-type": "application/json" } },
-    );
-  }
-
-  return new Response("Not Found", { status: 404 });
-}
-
 // ============================================================================
 // Main
 // ============================================================================
 
-const { port } = parseArgs();
+const { host, port, rules } = optionsOrExit();
 
 // Resolve subscribe types from EMERGENT_SUBSCRIBES env var
 let subscribeTypes: string[];
@@ -115,9 +126,38 @@ try {
   subscribeTypes = ["*"];
 }
 
-// Start SSE server
-Deno.serve({ port, handler: handleRequest });
-console.error(`[sse-sink] Listening on http://localhost:${port}/events`);
+// Start SSE server, or say in one line why the address could not be bound
+try {
+  Deno.serve({
+    hostname: host,
+    port,
+    handler: (req) =>
+      handleRequest(
+        req,
+        {
+          openStream: () => clientStream(clients),
+          clientCount: () => clients.size,
+        },
+        rules,
+      ),
+    // Log the address that was bound, not the one that was asked for.
+    onListen: (addr) =>
+      console.error(
+        `[sse-sink] Listening on ${
+          listenUrl(addr.hostname, addr.port, "/events")
+        }, answering to ${
+          describeAllowedHosts(host, rules.allowedHosts)
+        }, readable from a browser by ${
+          describeAllowedOrigins(rules.allowedOrigins)
+        }`,
+      ),
+  });
+} catch (err) {
+  console.error(
+    bindFailure(host, port, err instanceof Error ? err.message : String(err)),
+  );
+  Deno.exit(1);
+}
 
 // Connect to engine and broadcast events
 await runSink(undefined, subscribeTypes, (msg) => {
