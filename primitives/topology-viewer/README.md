@@ -56,6 +56,22 @@ on a network you do not control. `--host ::1` and `--host ::` select IPv6. An
 address the machine does not have, or a port already in use, prints one line
 (`Cannot listen on http://203.0.113.1:8080/: ...`) and exits `1`.
 
+### Which pages can read it
+
+After primitives 0.11.0 no response carries `Access-Control-Allow-Origin`. The
+page, `GET /events`, `GET /api/topology` and `POST /api/refresh` are one origin,
+and a page needs no permission to read its own origin, so nothing about the
+viewer changes.
+
+**This is a behavior change** for anything else. On 0.11.0 and earlier
+`GET /api/topology` and `GET /events` answered with
+`Access-Control-Allow-Origin: *`, so any web page open in a browser on the same
+machine could read the topology, `127.0.0.1` or not. A page on another origin
+that read them is now refused by the browser, and there is no option to allow
+it: put the viewer and that page behind one reverse proxy so they share an
+origin. Programs that are not browsers (curl, scripts) are unaffected, the
+header only ever instructed browsers.
+
 The engine sets `EMERGENT_API_PORT` for every primitive it starts. The viewer
 reads the topology from `http://127.0.0.1:$EMERGENT_API_PORT/api/topology`, and
 falls back to port `8891` when the variable is absent.
@@ -155,8 +171,8 @@ curl -s -X POST http://localhost:8080/api/refresh
 | `405`  | Any method but `POST`. Refresh makes the viewer do work, so a prefetch or a crawler issuing `GET` does not trigger it                                       |
 
 Requests that overlap, with each other or with the 5 second re-read, share one
-engine request. The reply carries no `Access-Control-Allow-Origin` header: other
-origins read `GET /api/topology`, which has it.
+engine request. Like every reply of the viewer it carries no
+`Access-Control-Allow-Origin` header.
 
 After primitives 0.11.0 the button calls `POST /api/refresh`. On 0.11.0 and
 earlier it first called a `/refresh` URL on a hard-coded `localhost` port, the
@@ -187,8 +203,10 @@ deno check main.ts
 deno test -A
 ```
 
-`args.ts` parses `--host` and `--port` as a pure function. `graph.ts` holds the
-graph state and the pure functions behind it. `http.ts` holds the request
-handling, written against an interface so `http_test.ts` drives it with plain
-`Request` objects and no listening socket. `main.ts` is the shell: arguments,
-the engine connection, and `Deno.serve`.
+`args.ts` parses `--host` and `--port` as a pure function; it is the same file
+as sse-sink's, byte for byte, and the repeatable flags it can collect are ones
+the viewer does not name. `graph.ts` holds the graph state and the pure
+functions behind it. `http.ts` holds the request handling, written against an
+interface so `http_test.ts` drives it with plain `Request` objects and no
+listening socket. `main.ts` is the shell: arguments, the engine connection, and
+`Deno.serve`.

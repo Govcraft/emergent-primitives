@@ -6,6 +6,11 @@
  * `handleRequest` carries the decision out against whatever it is handed for
  * the graph state, the static files, the event stream and the engine re-read,
  * which in the binary are the real ones and in a test are stand-ins.
+ *
+ * No response carries `Access-Control-Allow-Origin`. The page, its event
+ * stream and its API are one origin, which needs no permission to read itself,
+ * and the viewer has no authentication: the header would only let any other
+ * web page open in the same browser read the topology.
  * @module
  */
 
@@ -16,6 +21,13 @@ const STATIC_FILES: Readonly<Record<string, string>> = {
   "/": "index.html",
   "/app.js": "app.js",
   "/style.css": "style.css",
+};
+
+/** Headers of the `/events` stream the page listens to. */
+export const EVENT_STREAM_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
 };
 
 /** Path of the on-demand refresh endpoint. */
@@ -115,12 +127,8 @@ export async function handleRequest(
     case "events":
       return handlers.openEvents();
     case "topology":
-      return jsonResponse(handlers.state(), 200, {
-        "Access-Control-Allow-Origin": "*",
-      });
+      return jsonResponse(handlers.state(), 200);
     case "refresh": {
-      // No CORS header: the button is same-origin, and another origin has no
-      // business reading the reply to a request that makes the viewer work.
       await handlers.refresh();
       const state = handlers.state();
       return jsonResponse(state, refreshStatus(state.health), {

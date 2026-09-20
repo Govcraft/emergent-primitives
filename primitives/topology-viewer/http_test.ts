@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   decideRoute,
+  EVENT_STREAM_HEADERS,
   handleRequest,
   refreshStatus,
   type RouteDecision,
@@ -143,8 +144,49 @@ Deno.test("GET /api/topology reports the state without a re-read", async () => {
 
   assertEquals(calls, ["state"]);
   assertEquals(resp.status, 200);
-  assertEquals(resp.headers.get("Access-Control-Allow-Origin"), "*");
   assertEquals(await resp.json(), OK_STATE);
+});
+
+Deno.test("no response allows another origin, whatever origin asks", async () => {
+  const routes: [string, string, number][] = [
+    ["GET", "/", 200],
+    ["GET", "/app.js", 200],
+    ["GET", "/style.css", 200],
+    ["GET", "/events", 200],
+    ["GET", "/api/topology", 200],
+    ["POST", "/api/refresh", 200],
+    ["GET", "/api/refresh", 405],
+    ["OPTIONS", "/api/refresh", 405],
+    ["GET", "/nope", 404],
+  ];
+  const origins = [null, "https://evil.example", "http://127.0.0.1:8080"];
+
+  for (const [method, path, status] of routes) {
+    for (const origin of origins) {
+      const { handlers } = recorder([OK_STATE]);
+      const req = new Request(`http://viewer.test${path}`, {
+        method,
+        headers: origin === null ? {} : { Origin: origin },
+      });
+
+      const resp = await handleRequest(req, handlers);
+
+      const label = `${method} ${path} from ${origin}`;
+      assertEquals(resp.status, status, label);
+      assertEquals(
+        resp.headers.get("Access-Control-Allow-Origin"),
+        null,
+        label,
+      );
+      await resp.body?.cancel();
+    }
+  }
+});
+
+Deno.test("the event stream headers name no other origin", () => {
+  const names = Object.keys(EVENT_STREAM_HEADERS).map((n) => n.toLowerCase());
+  assertEquals(names, ["content-type", "cache-control", "connection"]);
+  assertEquals(EVENT_STREAM_HEADERS["Content-Type"], "text/event-stream");
 });
 
 Deno.test("static files, the event stream and unknown paths", async () => {
