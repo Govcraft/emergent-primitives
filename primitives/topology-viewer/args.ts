@@ -78,9 +78,9 @@ function parseHost(value: string): string | null {
  * Parse `--host` and `--port` (or `-p`), plus the flags named in `repeatable`.
  *
  * A repeated `--host` or `--port` takes its last value. A flag named in
- * `repeatable` is one only some primitives have (sse-sink passes
- * `--allow-origin`, topology-viewer passes none): every value it is given is
- * collected under its name, in order and unexamined, for the caller to parse.
+ * `repeatable` is one the caller asks for (both sinks pass `--allow-host`, and
+ * sse-sink `--allow-origin` as well): every value it is given is collected
+ * under its name, in order and unexamined, for the caller to parse.
  * Anything else is an error rather than ignored: a misspelled `--host` must not
  * quietly leave the server on a different address than the operator asked for.
  */

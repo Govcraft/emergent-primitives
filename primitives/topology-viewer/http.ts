@@ -11,9 +11,14 @@
  * stream and its API are one origin, which needs no permission to read itself,
  * and the viewer has no authentication: the header would only let any other
  * web page open in the same browser read the topology.
+ *
+ * Every request is first asked which host it names (`host.ts`), and one that
+ * names a host the viewer does not know as its own is answered `421` before
+ * any route is looked at: that is what a DNS rebinding page sends.
  * @module
  */
 
+import { decideRequestHost, misdirected } from "./host.ts";
 import type { TopologyHealth, TopologyState } from "./types.ts";
 
 /** Static files the viewer serves, by request path. */
@@ -103,6 +108,14 @@ export interface ViewerHandlers {
   readonly openEvents: () => Response;
 }
 
+/** The hosts the viewer answers to. */
+export interface HostRules {
+  /** The address or name given to `--host`. */
+  readonly bound: string;
+  /** The parsed `--allow-host` list. */
+  readonly allowed: readonly string[];
+}
+
 function jsonResponse(
   body: unknown,
   status: number,
@@ -118,7 +131,16 @@ function jsonResponse(
 export async function handleRequest(
   req: Request,
   handlers: ViewerHandlers,
+  hosts: HostRules,
 ): Promise<Response> {
+  const host = decideRequestHost(
+    req.headers.get("host"),
+    req.url,
+    hosts.bound,
+    hosts.allowed,
+  );
+  if (host === "refuse") return misdirected();
+
   const decision = decideRoute(req.method, new URL(req.url).pathname);
 
   switch (decision.kind) {

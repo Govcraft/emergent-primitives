@@ -21,15 +21,17 @@ Or download from
 
 ### CLI Arguments
 
-| Argument         | Default     | Description                                                                                                                      |
-| ---------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `--host`         | `127.0.0.1` | Address the stream is served on                                                                                                  |
-| `-p, --port`     | `8080`      | Port the stream is served on                                                                                                     |
-| `--allow-origin` | none        | A browser origin allowed to read the stream, such as `http://localhost:3000`. Repeat it for each origin. `*` allows every origin |
+| Argument         | Default     | Description                                                                                                                               |
+| ---------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `--host`         | `127.0.0.1` | Address the stream is served on                                                                                                           |
+| `-p, --port`     | `8080`      | Port the stream is served on                                                                                                              |
+| `--allow-host`   | none        | A host name the sink answers to besides IP addresses and `localhost`, such as the public name of a reverse proxy. Repeat it for each name |
+| `--allow-origin` | none        | A browser origin allowed to read the stream, such as `http://localhost:3000`. Repeat it for each origin. `*` allows every origin          |
 
 Each takes `--flag value` or `--flag=value`. An argument the sink does not know,
-a missing value, a port outside 1 to 65535, or an `--allow-origin` that is not
-`*` or an origin prints one line and exits `1`.
+a missing value, a port outside 1 to 65535, an `--allow-origin` that is not `*`
+or an origin, or an `--allow-host` that is not a bare host name prints one line
+and exits `1`.
 
 ### emergent.toml
 
@@ -73,6 +75,52 @@ that adds TLS and authentication, over `0.0.0.0` on a network you do not
 control. `--host ::1` and `--host ::` select IPv6. An address the machine does
 not have, or a port already in use, prints one line
 (`Cannot listen on http://203.0.113.1:8080/: ...`) and exits `1`.
+
+### Which host names it answers to
+
+After primitives 0.11.0 the sink looks at the host every request names and
+answers `421 Misdirected Request` unless it is one of:
+
+- an IP address (`127.0.0.1:8080`, `192.168.1.20:8080`, `[::1]:8080`), whatever
+  address the sink is bound to,
+- `localhost`,
+- the name given to `--host`, when that is a name,
+- a name listed with `--allow-host` (repeatable).
+
+The port is not compared. The startup line says which hosts are answered:
+
+```text
+[sse-sink] Listening on http://127.0.0.1:8080/events, answering to any IP address, localhost, app.example, readable from a browser by https://app.example
+```
+
+This is what stops DNS rebinding. Binding `127.0.0.1` keeps other machines out
+and the absence of `Access-Control-Allow-Origin` keeps other origins out, but a
+page on `attacker.example` can re-resolve its own name to `127.0.0.1`, and from
+then on the browser treats the sink as that page's own origin. The one thing the
+page cannot choose is the `Host` the browser sends, which stays
+`attacker.example`. An address cannot be rebound and `localhost` is not the
+attacker's to resolve, so those are always answered; every other name has to be
+one you listed.
+
+**This is a behavior change.** On 0.11.0 and earlier the `Host` was never looked
+at. A sink reached by IP address or as `localhost` needs no change, and that
+covers a published container port and an SSH port forward. What needs
+`--allow-host` is a name:
+
+| You open the stream as                                                                                                                             | Needs                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `http://127.0.0.1:8080`, `http://localhost:8080`, `http://192.168.1.20:8080`                                                                       | nothing                                            |
+| `http://myhost:8080`, `http://myhost.local:8080`                                                                                                   | `--allow-host myhost`, `--allow-host myhost.local` |
+| `https://app.example` through a reverse proxy that forwards the name it was asked for (Caddy by default, nginx with `proxy_set_header Host $host`) | `--allow-host app.example`                         |
+| the same through a proxy that sends the upstream address as `Host` (nginx by default)                                                              | nothing                                            |
+
+This holds whatever `--host` is: `--host 0.0.0.0` exposes the sink to other
+machines and does not make it answer to their names for it. A value is a bare
+host name, stored lower case and in its ASCII form. A scheme, a port, a path or
+a `*` is refused with one line and exit `1`: names are compared whole, there are
+no patterns, so `--allow-host '*.app.example'` would be listed and never match.
+`attacker.localhost` and other names under `localhost` are names like any other
+and need listing.
 
 ### Which pages can read the stream
 
@@ -118,7 +166,10 @@ The header is a rule for browsers and nothing more. curl, a proxy, or any
 program that can reach the port reads the stream whatever the header says; that
 is what `--host` and a reverse proxy with authentication are for. A proxy that
 serves the stream under the page's own origin needs no `--allow-origin` at all.
-`GET /health` never carries the header.
+`GET /health` never carries the header. `--allow-origin` and `--allow-host`
+answer different questions and a page behind a proxy may need both: the first
+names the origin of the page that reads the stream, the second names the host
+the stream itself is asked for under.
 
 ## HTTP endpoints
 
@@ -160,4 +211,10 @@ is the same file as topology-viewer's, byte for byte: it collects the values of
 the repeatable flags a caller names and leaves their meaning to the caller, so
 `--allow-origin` exists here and is an unknown argument there. `cors.ts` parses
 the origins and decides the header for one request, both pure and tested in
-`cors_test.ts`. `main.ts` is the server and the engine connection.
+`cors_test.ts`. `host.ts` parses the `--allow-host` names and decides
+`(Host header, bound address, allowed hosts) -> accept | refuse`, pure and
+tested in `host_test.ts`, and like `args.ts` it is the same file as
+topology-viewer's, byte for byte. `http.ts` answers one request against an
+interface, so `http_test.ts` drives it with plain `Request` objects and no
+listening socket. `main.ts` is the shell: arguments, the client set, the engine
+connection and `Deno.serve`.

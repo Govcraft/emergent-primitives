@@ -10,6 +10,10 @@
  *
  * The page is served on 127.0.0.1 unless `--host` says otherwise: it shows
  * every primitive's name, topics, state and PID, so exposing it is a decision.
+ * Whatever the address, a request is answered only when the host it names is
+ * an IP address, `localhost`, or a name listed with `--allow-host`
+ * (repeatable): that is what stops a DNS rebinding page, and it is what a
+ * reverse proxy that forwards its own name needs listed.
  *
  * `--allow-write` is for the engine socket: Deno asks for read and write
  * access to a Unix socket path before it will connect to it.
@@ -22,6 +26,11 @@ import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.13.0";
 import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
 import type { ListenOptions } from "./args.ts";
 import {
+  ALLOW_HOST_FLAG,
+  describeAllowedHosts,
+  parseAllowedHosts,
+} from "./host.ts";
+import {
   ENGINE_NODE_ID,
   parseTopologyResponse,
   TopologyGraph,
@@ -29,16 +38,22 @@ import {
 import { EVENT_STREAM_HEADERS, handleRequest, singleFlight } from "./http.ts";
 import type { EnginePrimitive, TopologyNode } from "./types.ts";
 
+const USAGE =
+  "Usage: topology-viewer [--host HOST] [--port PORT] [--allow-host NAME]...";
+
 // Parse the arguments, or say what is wrong with them in one line and exit.
-function listenOptionsOrExit(): ListenOptions {
-  const parsed = parseListenArgs(Deno.args);
+function optionsOrExit(): ListenOptions & { allowedHosts: readonly string[] } {
+  const parsed = parseListenArgs(Deno.args, [ALLOW_HOST_FLAG]);
   if (!parsed.ok) {
-    console.error(
-      `${parsed.error}. Usage: topology-viewer [--host HOST] [--port PORT]`,
-    );
+    console.error(`${parsed.error}. ${USAGE}`);
     Deno.exit(1);
   }
-  return parsed.options;
+  const hosts = parseAllowedHosts(parsed.repeated[ALLOW_HOST_FLAG]);
+  if (!hosts.ok) {
+    console.error(`${hosts.error}. ${USAGE}`);
+    Deno.exit(1);
+  }
+  return { ...parsed.options, allowedHosts: hosts.hosts };
 }
 
 // Get current script directory for static file serving
@@ -243,7 +258,7 @@ async function connectWithRetry(
 
 // Main entry point
 async function main(): Promise<void> {
-  const { host, port } = listenOptionsOrExit();
+  const { host, port, allowedHosts } = optionsOrExit();
   const name = Deno.env.get("EMERGENT_NAME") ?? "topology-viewer";
   const graph = new TopologyGraph();
 
@@ -280,7 +295,7 @@ async function main(): Promise<void> {
         console.log(
           `[${name}] HTTP server listening on ${
             listenUrl(addr.hostname, addr.port)
-          }`,
+          }, answering to ${describeAllowedHosts(host, allowedHosts)}`,
         ),
     },
     (req: Request): Promise<Response> =>
@@ -289,7 +304,7 @@ async function main(): Promise<void> {
         refresh,
         readStatic: readStaticFile,
         openEvents: () => createSSEStream(graph),
-      }),
+      }, { bound: host, allowed: allowedHosts }),
   );
 
   // Connect to engine with retry (runs in background)
