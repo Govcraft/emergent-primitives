@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
-import * as sdk from "jsr:@govcraft/emergent@0.13.0";
+import * as sdk from "jsr:@govcraft/emergent@0.14.0";
 import {
   assessHealth,
   computeEdges,
@@ -76,8 +76,8 @@ Deno.test("topicMatches routes the way the engine does", () => {
   }
 });
 
-// The published 0.13.0 SDK predates the topic helpers, so this runs only when
-// the SDK in use exports them.
+// SDK releases before 0.14.0 predate the topic helpers, so this is skipped when
+// the SDK in use does not export them. On the pinned 0.14.0 it runs.
 const sdkTopicMatches = (sdk as Record<string, unknown>).topicMatches;
 
 Deno.test({

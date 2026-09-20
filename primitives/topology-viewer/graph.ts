@@ -14,7 +14,7 @@ import type {
   TopologyNode,
   TopologyState,
 } from "./types.ts";
-import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.13.0";
+import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.14.0";
 
 /** The name the engine reports itself under in topology responses. */
 export const ENGINE_NODE_ID = "emergent-engine";

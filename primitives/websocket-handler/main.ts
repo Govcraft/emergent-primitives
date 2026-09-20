@@ -35,7 +35,7 @@
  * @module
  */
 
-import { createMessage, EmergentHandler } from "jsr:@govcraft/emergent@0.13.0";
+import { createMessage, EmergentHandler } from "jsr:@govcraft/emergent@0.14.0";
 import { decodeFrame } from "./frames.ts";
 import {
   type CloseObservation,
