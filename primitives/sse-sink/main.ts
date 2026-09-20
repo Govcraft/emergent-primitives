@@ -44,8 +44,8 @@ import {
   describeAllowedHosts,
   parseAllowedHosts,
 } from "./host.ts";
-import { handleRequest } from "./http.ts";
-import type { SinkRules } from "./http.ts";
+import { clientStream, handleRequest } from "./http.ts";
+import type { Clients, SinkRules } from "./http.ts";
 
 // ============================================================================
 // CLI
@@ -88,7 +88,7 @@ function optionsOrExit(): ListenOptions & { rules: SinkRules } {
 // SSE Server
 // ============================================================================
 
-const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const clients: Clients = new Set();
 const encoder = new TextEncoder();
 
 function broadcast(msg: EmergentMessage): void {
@@ -107,18 +107,6 @@ function broadcast(msg: EmergentMessage): void {
       clients.delete(controller);
     }
   }
-}
-
-// One client's stream: registered while it is open, dropped when it closes.
-function openStream(): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      clients.add(controller);
-    },
-    cancel(controller) {
-      clients.delete(controller);
-    },
-  });
 }
 
 // ============================================================================
@@ -146,7 +134,10 @@ try {
     handler: (req) =>
       handleRequest(
         req,
-        { openStream, clientCount: () => clients.size },
+        {
+          openStream: () => clientStream(clients),
+          clientCount: () => clients.size,
+        },
         rules,
       ),
     // Log the address that was bound, not the one that was asked for.

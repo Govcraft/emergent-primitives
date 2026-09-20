@@ -31,6 +31,27 @@ export interface SinkHandlers {
   readonly clientCount: () => number;
 }
 
+/** The connected clients: one stream controller each. */
+export type Clients = Set<ReadableStreamDefaultController<Uint8Array>>;
+
+/**
+ * One client's event stream, in `clients` for as long as it is open. `cancel`
+ * is handed the reason the stream closed, not the controller, so the
+ * controller is kept from `start`.
+ */
+export function clientStream(clients: Clients): ReadableStream<Uint8Array> {
+  let client: ReadableStreamDefaultController<Uint8Array> | undefined;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      client = controller;
+      clients.add(controller);
+    },
+    cancel() {
+      if (client !== undefined) clients.delete(client);
+    },
+  });
+}
+
 /** Answer one request. */
 export function handleRequest(
   req: Request,

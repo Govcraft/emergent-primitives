@@ -1,5 +1,11 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { handleRequest, type SinkHandlers, type SinkRules } from "./http.ts";
+import {
+  type Clients,
+  clientStream,
+  handleRequest,
+  type SinkHandlers,
+  type SinkRules,
+} from "./http.ts";
 
 const RULES: SinkRules = {
   bound: "127.0.0.1",
@@ -143,4 +149,21 @@ Deno.test("the origin decision still rides on the stream, and only there", async
     );
     await resp.body?.cancel();
   }
+});
+
+Deno.test("a client is counted while its stream is open and dropped when it closes", async () => {
+  const clients: Clients = new Set();
+
+  const first = clientStream(clients);
+  const second = clientStream(clients);
+  assertEquals(clients.size, 2);
+
+  await first.cancel("client went away");
+  assertEquals(clients.size, 1, "the closed client is dropped at once");
+
+  // The one that is left is the one still open: it takes an event.
+  const [open] = clients;
+  open.enqueue(new TextEncoder().encode("data: {}\n\n"));
+  const chunk = await second.getReader().read();
+  assertEquals(new TextDecoder().decode(chunk.value), "data: {}\n\n");
 });
