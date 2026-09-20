@@ -47,6 +47,14 @@ pub struct SourcePrimitive {
     pub description: String,
     pub homepage: Option<String>,
     pub license: Option<String>,
+    /// A runtime the installed artifact needs on the user's PATH.
+    ///
+    /// The engine only shows it, in `marketplace info`, so it is a message to
+    /// a reader: install this before the primitive will run. Nothing in this
+    /// repository needs one. `cargo build` and `deno compile` both produce a
+    /// self-contained binary, and the release ships those, so [`validate`]
+    /// rejects the field here rather than have `info` ask for Deno that the
+    /// binary does not use.
     pub runtime: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -282,6 +290,12 @@ pub fn validate(dir_name: &str, source: &SourceManifest) -> Vec<String> {
     if primitive.description.trim().is_empty() {
         problems.push("[primitive].description is empty".to_string());
     }
+    if let Some(runtime) = &primitive.runtime {
+        problems.push(format!(
+            "[primitive].runtime is \"{runtime}\", but the release ships a self-contained \
+             binary for every primitive here, so nothing has to be installed to run one"
+        ));
+    }
 
     if primitive.kind == "source" && !source.messages.subscribes.is_empty() {
         problems.push("a source cannot subscribe, but [messages].subscribes is set".to_string());
@@ -482,6 +496,15 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
             validate("exec-source", &exec_source()),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_declared_runtime_is_a_problem_because_the_binaries_are_self_contained() {
+        let mut manifest = exec_source();
+        manifest.primitive.runtime = Some("deno".to_string());
+        let problems = validate("exec-source", &manifest);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("self-contained"), "{problems:?}");
     }
 
     #[test]

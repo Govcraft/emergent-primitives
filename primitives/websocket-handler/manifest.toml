@@ -10,7 +10,6 @@ kind = "handler"
 description = "Bidirectional WebSocket bridge for Emergent pipelines"
 homepage = "https://github.com/Govcraft/emergent-primitives"
 license = "MIT"
-runtime = "deno"
 tags = ["websocket", "ws", "realtime", "bidirectional"]
 
 [messages]

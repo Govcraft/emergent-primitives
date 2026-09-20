@@ -801,6 +801,12 @@ and CI runs the same command, so a flag that reaches a release without its
 manifest entry fails the build. The three Deno primitives parse `Deno.args` by
 hand and print no help page, so their manifests are checked by eye.
 
+No manifest here sets `[primitive].runtime`. That field tells a reader of
+`emergent marketplace info` to install something before the primitive will run,
+and nothing in this repository needs one: `cargo build` and `deno compile` both
+produce a self-contained binary, and the release ships those. `xtask check`
+rejects the field so it cannot come back by copy and paste.
+
 To see what a release will publish:
 
 ```bash
