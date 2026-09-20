@@ -786,18 +786,52 @@ cargo nextest run
 cargo clippy --all-targets -- -D warnings
 ```
 
+## Manifests
+
+Every primitive carries a `manifest.toml` next to its code. It is what
+`emergent marketplace list`, `info` and `install` read: the description, the
+message types, every flag, and the targets the release builds for. It holds no
+version and no checksums, because the release tag supplies the version and the
+release's `checksums.txt` supplies the checksums.
+
+**Adding, renaming or removing a flag means editing that manifest in the same
+commit.** `cargo run -p xtask -- check --flags` builds each Rust primitive and
+compares its `--help` with the manifest, flags and environment variables both,
+and CI runs the same command, so a flag that reaches a release without its
+manifest entry fails the build. The three Deno primitives parse `Deno.args` by
+hand and print no help page, so their manifests are checked by eye.
+
+No manifest here sets `[primitive].runtime`. That field tells a reader of
+`emergent marketplace info` to install something before the primitive will run,
+and nothing in this repository needs one: `cargo build` and `deno compile` both
+produce a self-contained binary, and the release ships those. `xtask check`
+rejects the field so it cannot come back by copy and paste.
+
+To see what a release will publish:
+
+```bash
+cargo run -p xtask -- check --flags
+cargo run -p xtask -- generate --tag v0.12.0 --out dist
+```
+
 ## Release
 
 Releases are automated via GitHub Actions. To create a new release:
 
-1. Tag the commit: `git tag v0.4.0`
-2. Push the tag: `git push origin v0.4.0`
+1. Bump the workspace version in `Cargo.toml`
+2. Tag the commit: `git tag v0.12.0`
+3. Push the tag: `git push origin v0.12.0`
 
 The workflow will:
 - Build for Linux (x86_64, aarch64), macOS (x86_64, aarch64)
 - Create archives (tar.gz)
 - Generate SHA256 checksums
+- Generate `index.toml` and `manifests.toml` from the manifests and the tag
 - Upload to GitHub Releases
+
+There is no third step in another repository. After primitives 0.11.0 the
+engine reads the index and the manifests straight off the release, so a
+release is done when the workflow is.
 
 ## License
 

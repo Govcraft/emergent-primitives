@@ -1,0 +1,42 @@
+# Topology Viewer Sink Manifest
+#
+# The release tag supplies the version and the release's checksums.txt supplies
+# the archive checksums, so neither is written here. `cargo run -p xtask --
+# generate` stamps both into the index and manifests attached to the release.
+
+[primitive]
+name = "topology-viewer"
+kind = "sink"
+description = "Real-time workflow visualization with D3.js force-directed graph"
+homepage = "https://github.com/Govcraft/emergent-primitives"
+license = "MIT"
+tags = ["visualization", "monitoring", "dashboard", "d3"]
+
+[messages]
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*", "system.response.topology"]
+
+# CLI Arguments
+[[args]]
+name = "host"
+long = "host"
+required = false
+description = "Address to serve the visualization on (default: 127.0.0.1; use 0.0.0.0 to expose it on every interface)"
+
+[[args]]
+name = "port"
+long = "port"
+short = "p"
+required = false
+description = "HTTP port to serve the visualization (default: 8080)"
+
+# Binary Downloads
+#
+# Release targets. The archive for each is
+# <name>-<version>-<target>.tar.gz, built by .github/workflows/release.yml.
+[binaries]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
