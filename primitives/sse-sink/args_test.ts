@@ -13,6 +13,7 @@ Deno.test("the defaults are loopback and 8080", () => {
   assertEquals(parseListenArgs([]), {
     ok: true,
     options: { host: "127.0.0.1", port: 8080 },
+    repeated: {},
   });
 });
 
@@ -39,7 +40,7 @@ Deno.test("parseListenArgs accepts table", () => {
   for (const [args, host, port] of cases) {
     assertEquals(
       parseListenArgs(args),
-      { ok: true, options: { host, port } },
+      { ok: true, options: { host, port }, repeated: {} },
       args.join(" "),
     );
   }
@@ -106,6 +107,64 @@ Deno.test("parseListenArgs rejects table", () => {
   for (const [args, error] of cases) {
     assertEquals(parseListenArgs(args), { ok: false, error }, args.join(" "));
   }
+});
+
+Deno.test("a repeatable flag collects every value in order", () => {
+  const cases: [string[], string[]][] = [
+    [[], []],
+    [["--allow-origin", "https://a.example"], ["https://a.example"]],
+    [["--allow-origin=https://a.example"], ["https://a.example"]],
+    [
+      [
+        "--allow-origin",
+        "https://b.example",
+        "--allow-origin=https://a.example",
+      ],
+      ["https://b.example", "https://a.example"],
+    ],
+    [["--port", "9000", "--allow-origin", "*", "--host", "::1"], ["*"]],
+    // The value is collected unexamined: what it means is the caller's rule.
+    [["--allow-origin", "--port"], ["--port"]],
+    [["--allow-origin="], [""]],
+  ];
+
+  for (const [args, values] of cases) {
+    const parsed = parseListenArgs(args, ["--allow-origin"]);
+    assertEquals(
+      parsed.ok && parsed.repeated,
+      { "--allow-origin": values },
+      args.join(" "),
+    );
+  }
+});
+
+Deno.test("a repeatable flag does not disturb the listen options", () => {
+  assertEquals(
+    parseListenArgs(
+      ["--host", "0.0.0.0", "--allow-origin", "*", "-p", "9000"],
+      ["--allow-origin"],
+    ),
+    {
+      ok: true,
+      options: { host: "0.0.0.0", port: 9000 },
+      repeated: { "--allow-origin": ["*"] },
+    },
+  );
+});
+
+Deno.test("a repeatable flag exists only for the caller that names it", () => {
+  assertEquals(parseListenArgs(["--allow-origin", "*"]), {
+    ok: false,
+    error: 'Unknown argument "--allow-origin"',
+  });
+  assertEquals(parseListenArgs(["--allow-origin", "*"], ["--other"]), {
+    ok: false,
+    error: 'Unknown argument "--allow-origin"',
+  });
+  assertEquals(parseListenArgs(["--allow-origin"], ["--allow-origin"]), {
+    ok: false,
+    error: "--allow-origin needs a value",
+  });
 });
 
 Deno.test("listenUrl prints the bound address, bracketing IPv6", () => {
