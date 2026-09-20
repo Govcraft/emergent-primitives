@@ -30,8 +30,8 @@
  * @module
  */
 
-import { runSink } from "jsr:@govcraft/emergent@0.14.0";
-import type { EmergentMessage } from "jsr:@govcraft/emergent@0.14.0";
+import { runSink } from "@govcraft/emergent";
+import type { EmergentMessage } from "@govcraft/emergent";
 import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
 import type { ListenOptions } from "./args.ts";
 import {

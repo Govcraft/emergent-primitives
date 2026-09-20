@@ -21,8 +21,8 @@
  * The SDK automatically handles system.shutdown for graceful shutdown.
  */
 
-import { EmergentSink } from "jsr:@govcraft/emergent@0.14.0";
-import type { SystemEventPayload } from "jsr:@govcraft/emergent@0.14.0";
+import { EmergentSink } from "@govcraft/emergent";
+import type { SystemEventPayload } from "@govcraft/emergent";
 import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
 import type { ListenOptions } from "./args.ts";
 import {

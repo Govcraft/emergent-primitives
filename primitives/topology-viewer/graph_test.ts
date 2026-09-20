@@ -1,5 +1,5 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert@1";
-import * as sdk from "jsr:@govcraft/emergent@0.14.0";
+import { assertEquals, assertThrows } from "@std/assert";
+import * as sdk from "@govcraft/emergent";
 import {
   assessHealth,
   computeEdges,

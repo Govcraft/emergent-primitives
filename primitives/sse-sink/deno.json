@@ -1,7 +1,13 @@
 {
   "lock": false,
+  "imports": {
+    "@govcraft/emergent": "jsr:@govcraft/emergent@0.14.0",
+    "@std/assert": "jsr:@std/assert@1"
+  },
   "minimumDependencyAge": {
     "age": "P1D",
-    "exclude": ["jsr:@govcraft/emergent"]
+    "exclude": [
+      "jsr:@govcraft/emergent"
+    ]
   }
 }

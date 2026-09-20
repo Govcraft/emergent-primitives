@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals } from "@std/assert";
 import { bytesToBase64, decodeFrame } from "./frames.ts";
 
 Deno.test("decodeFrame: text frames parse as JSON, else stay text", () => {
