@@ -12,7 +12,7 @@ The handler makes no decision about the answers. Thresholds, confidence bands an
 emergent marketplace install jev-handler
 ```
 
-Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitives/releases). Needs Emergent engine 0.14.0 or later.
+Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitives/releases). The marketplace install needs Emergent engine 0.14.0 or later, because older engines read the frozen emergent-registry catalog.
 
 ## The API key
 
