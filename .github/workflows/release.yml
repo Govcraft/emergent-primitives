@@ -21,10 +21,31 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo nextest run --no-tests=pass
+      - run: cargo run -p xtask -- check --flags
+
+  quality-deno:
+    name: Quality Gate, Deno (${{ matrix.primitive }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        primitive: [topology-viewer, websocket-handler, sse-sink]
+    defaults:
+      run:
+        working-directory: primitives/${{ matrix.primitive }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno check main.ts
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno test -A --permit-no-files
 
   build:
     name: Build ${{ matrix.primitive }} for ${{ matrix.target }}
-    needs: [quality]
+    needs: [quality, quality-deno]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -34,6 +55,7 @@ jobs:
           - exec-sink
           - exec-source
           - http-source
+          - jev-handler
           - stream-runner
         target:
           - x86_64-unknown-linux-gnu
@@ -117,7 +139,7 @@ jobs:
 
   build-deno:
     name: Build ${{ matrix.primitive }} (Deno) for ${{ matrix.target }}
-    needs: [quality]
+    needs: [quality, quality-deno]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -188,9 +210,29 @@ jobs:
             *.tar.gz
             *.sha256
 
+  manifests:
+    name: Generate index and manifests
+    needs: [quality, quality-deno]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate
+        run: cargo run -p xtask -- generate --tag "${{ github.ref }}" --out dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-index
+          path: dist/*.toml
+
   release:
     name: Create Release
-    needs: [build, build-deno]
+    needs: [build, build-deno, manifests]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -217,6 +259,8 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256
+            artifacts/index.toml
+            artifacts/manifests.toml
             checksums.txt
           generate_release_notes: true
           fail_on_unmatched_files: false

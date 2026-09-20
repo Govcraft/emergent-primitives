@@ -37,12 +37,50 @@ export interface TopologyEdge {
   messageType: string;
 }
 
+/**
+ * A primitive as the engine reports it, in `GET /api/topology` bodies and in
+ * `system.response.topology` payloads.
+ */
+export interface EnginePrimitive {
+  readonly name: string;
+  readonly kind: string;
+  readonly state: string;
+  readonly publishes: readonly string[];
+  readonly subscribes: readonly string[];
+  readonly pid?: number | null;
+  readonly error?: string | null;
+}
+
+/** Outcome of the most recent topology request to the engine. */
+export type SnapshotState =
+  | { readonly status: "pending" }
+  | { readonly status: "loaded" }
+  | { readonly status: "failed"; readonly reason: string };
+
+/**
+ * Whether the graph can be trusted.
+ *   - "ok": the engine answered and at least one primitive is known
+ *   - "pending": the engine has not answered yet
+ *   - "empty": the engine answered and reports no primitive but itself
+ *   - "degraded": the topology request failed or timed out
+ */
+export type HealthStatus = "ok" | "pending" | "empty" | "degraded";
+
+/** Health of the graph, reported by the API and shown on the page. */
+export interface TopologyHealth {
+  status: HealthStatus;
+  /** What is wrong, in words a person can act on. Absent when "ok". */
+  detail?: string;
+}
+
 /** Complete topology state. */
 export interface TopologyState {
   /** All nodes in the topology. */
   nodes: TopologyNode[];
   /** All edges in the topology. */
   edges: TopologyEdge[];
+  /** Whether the nodes and edges above can be trusted. */
+  health: TopologyHealth;
 }
 
 /** Server-sent event message wrapper. */

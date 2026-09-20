@@ -1,6 +1,6 @@
 //! HTTP Source - Webhook Receiver
 //!
-//! A Source that receives HTTP POST requests and emits `http.request` events.
+//! A Source that receives HTTP requests and emits `http.request` events.
 //! Supports optional HMAC signature validation for webhook security.
 //!
 //! Sources are SILENT - they only produce domain messages.
@@ -17,137 +17,36 @@
 //!
 //! # With HMAC signature validation
 //! http-source --secret my-secret-key
+//!
+//! # Behind a reverse proxy that sets X-Forwarded-For
+//! http-source --trust-forwarded-for
 //! ```
+//!
+//! This binary is the shell: it parses arguments, connects to the engine, and
+//! serves. The behaviour lives in the library modules, where it is testable.
 
-use axum::{
-    Router,
-    body::Bytes,
-    extract::State,
-    http::{HeaderMap, Method, StatusCode},
-    response::IntoResponse,
-    routing::any,
-};
+use std::{net::SocketAddr, sync::Arc};
+
 use clap::Parser;
-use emergent_client::{EmergentMessage, EmergentSource};
-use hmac::{Hmac, Mac};
-use serde_json::json;
-use sha2::Sha256;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use emergent_client::EmergentSource;
+use http_source::app::{AppState, MessagePublisher, build_router};
+use http_source::args::Args;
+use http_source::route_path::RoutePath;
 use tokio::signal::unix::{SignalKind, signal};
-
-/// HTTP webhook receiver that emits http.request events.
-#[derive(Parser, Debug, Clone)]
-#[command(name = "http-source")]
-#[command(about = "Receives HTTP webhooks and emits events")]
-struct Args {
-    /// Port to listen on.
-    #[arg(short, long, env = "HTTP_SOURCE_PORT", default_value = "8080")]
-    port: u16,
-
-    /// Host to bind to.
-    #[arg(long, env = "HTTP_SOURCE_HOST", default_value = "0.0.0.0")]
-    host: String,
-
-    /// Path to accept requests on.
-    #[arg(long, env = "HTTP_SOURCE_PATH", default_value = "/")]
-    path: String,
-
-    /// Optional HMAC secret for signature validation.
-    /// If provided, requests must include X-Signature header with HMAC-SHA256.
-    #[arg(long, env = "HTTP_SOURCE_SECRET")]
-    secret: Option<String>,
-}
-
-/// Payload for http.request events.
-#[derive(Debug, serde::Serialize)]
-struct HttpRequestPayload {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: serde_json::Value,
-    remote_addr: Option<String>,
-}
-
-/// Shared application state.
-struct AppState {
-    source: Arc<EmergentSource>,
-    secret: Option<String>,
-    publish_type: String,
-}
-
-/// Validates HMAC-SHA256 signature.
-fn validate_signature(secret: &str, body: &[u8], signature: &str) -> bool {
-    let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    mac.update(body);
-
-    let expected = match hex::decode(signature.trim_start_matches("sha256=")) {
-        Ok(h) => h,
-        Err(_) => return false,
-    };
-
-    mac.verify_slice(&expected).is_ok()
-}
-
-/// Handles incoming HTTP requests.
-async fn handle_request(
-    State(state): State<Arc<AppState>>,
-    method: Method,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    // Validate signature if secret is configured
-    if let Some(ref secret) = state.secret {
-        if let Some(signature) = headers.get("x-signature").and_then(|h| h.to_str().ok()) {
-            if !validate_signature(secret, &body, signature) {
-                return (StatusCode::UNAUTHORIZED, "Invalid signature").into_response();
-            }
-        } else {
-            return (StatusCode::UNAUTHORIZED, "Missing signature").into_response();
-        }
-    }
-
-    // Convert headers to HashMap
-    let headers_map: HashMap<String, String> = headers
-        .iter()
-        .filter_map(|(k, v)| {
-            v.to_str()
-                .ok()
-                .map(|val| (k.as_str().to_string(), val.to_string()))
-        })
-        .collect();
-
-    // Parse body: try JSON first, fall back to string value
-    let body_value = serde_json::from_slice(&body)
-        .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&body).to_string()));
-
-    // Create payload
-    let payload = HttpRequestPayload {
-        method: method.to_string(),
-        path: "/".to_string(), // Axum doesn't provide path in handler
-        headers: headers_map,
-        body: body_value,
-        remote_addr: None,
-    };
-
-    // Create and publish message
-    let message = EmergentMessage::new(&state.publish_type).with_payload(json!(payload));
-
-    match state.source.publish(message).await {
-        Ok(()) => (StatusCode::ACCEPTED, "").into_response(),
-        Err(e) => {
-            eprintln!("Failed to publish event: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to publish event").into_response()
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Check the route before anything else. The router panics on a path it
+    // cannot register, and a config typo deserves one line, not a backtrace.
+    let route = match RoutePath::parse(&args.path) {
+        Ok(route) => route,
+        Err(rule) => {
+            eprintln!("Invalid --path {:?}: {rule}", args.path);
+            std::process::exit(1);
+        }
+    };
 
     // Get the source name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "http-source".to_string());
@@ -168,17 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "http.request".to_string());
 
-    // Create shared state
+    let source = Arc::new(source);
+    let publisher: Arc<dyn MessagePublisher> = source.clone();
     let state = Arc::new(AppState {
-        source: Arc::new(source),
+        publisher,
         secret: args.secret.clone(),
         publish_type,
+        trust_forwarded_for: args.trust_forwarded_for,
     });
 
-    // Create router
-    let app = Router::new()
-        .route(&args.path, any(handle_request))
-        .with_state(state.clone());
+    let app = build_router(&route, state);
 
     // Parse socket address
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
@@ -186,10 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up SIGTERM handler for graceful shutdown
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    // Create server with graceful shutdown
+    // `into_make_service_with_connect_info` is what puts the peer address in
+    // reach of the handler; without it the `ConnectInfo` extractor has nothing
+    // to read and every request fails.
     let server = axum::serve(
         tokio::net::TcpListener::bind(&addr).await?,
-        app.into_make_service(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     );
 
     // Run server with shutdown signal
@@ -198,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result?;
         }
         _ = sigterm.recv() => {
-            let _ = state.source.disconnect().await;
+            let _ = source.disconnect().await;
         }
     }
 

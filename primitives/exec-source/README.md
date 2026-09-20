@@ -18,11 +18,15 @@ Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitiv
 
 | Argument | Environment Variable | Default | Description |
 |----------|---------------------|---------|-------------|
-| `-c, --command` | `EXEC_SOURCE_COMMAND` | required | Command to execute |
-| `-a, --args` | `EXEC_SOURCE_ARGS` | — | Space-separated command arguments |
+| `-c, --command` | `EXEC_SOURCE_COMMAND` | required | The executable to run. With `--shell`, a whole command line instead |
+| `-a, --args` | `EXEC_SOURCE_ARGS` | none | Space-separated arguments for the command |
 | `-i, --interval` | `EXEC_SOURCE_INTERVAL` | `0` | Repeat interval in milliseconds (0 = run once) |
-| `-d, --working-dir` | `EXEC_SOURCE_WORKING_DIR` | — | Working directory for command |
-| `-s, --shell` | `EXEC_SOURCE_SHELL` | — | Shell to use (e.g., `bash`, `sh`) |
+| `-d, --working-dir` | `EXEC_SOURCE_WORKING_DIR` | none | Working directory for command |
+| `-s, --shell` | `EXEC_SOURCE_SHELL` | none | Shell to run the command line with (e.g., `bash`, `sh`) |
+
+Without `--shell`, `--command` is the name of one executable and its arguments go in `--args`. `--command "df -h"` looks for a program literally named `df -h` and the source exits with `No such file or directory`. Pass `--shell sh` when you want a command line with arguments, pipes or variables in one string.
+
+An `--args` value that starts with a hyphen has to be attached with `=`, as in `--args=-h`. Written as `--args "-h"` it is read as a flag and rejected.
 
 ### emergent.toml
 
@@ -77,13 +81,13 @@ Always emitted after command completes.
 ### Run once
 
 ```bash
-exec-source --command "ls -la"
+exec-source --shell sh --command "ls -la"
 ```
 
 ### Periodic execution
 
 ```bash
-exec-source --command "df -h" --interval 60000
+exec-source --shell sh --command "df -h" --interval 60000
 ```
 
 ### With shell and working directory
@@ -101,7 +105,7 @@ exec-source \
 [[sources]]
 name = "disk-monitor"
 path = "exec-source"
-args = ["--command", "df -h", "--interval", "60000"]
+args = ["--shell", "sh", "--command", "df -h", "--interval", "60000"]
 enabled = true
 publishes = ["exec.output", "exec.exit"]
 ```
