@@ -19,7 +19,7 @@ Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitiv
 | Argument | Environment Variable | Default | Description |
 |----------|---------------------|---------|-------------|
 | `-p, --port` | `HTTP_SOURCE_PORT` | `8080` | Port to listen on |
-| `--host` | `HTTP_SOURCE_HOST` | `0.0.0.0` | Host to bind to |
+| `--host` | `HTTP_SOURCE_HOST` | `127.0.0.1` | Host to bind to. From primitives 0.12.0 the default is loopback; on 0.11.0 and earlier it was `0.0.0.0` |
 | `--path` | `HTTP_SOURCE_PATH` | `/` | Route to accept requests on |
 | `--secret` | `HTTP_SOURCE_SECRET` | — | HMAC secret for signature validation |
 | `--trust-forwarded-for` | — | off | Report the caller from `X-Forwarded-For` instead of the socket peer |

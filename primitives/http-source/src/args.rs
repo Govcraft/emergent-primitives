@@ -2,6 +2,10 @@
 
 use clap::Parser;
 
+/// The address `--host` falls back to. Loopback, so that a source nobody
+/// configured is reachable from this machine only.
+pub const DEFAULT_HOST: &str = "127.0.0.1";
+
 /// HTTP webhook receiver that emits `http.request` events.
 #[derive(Parser, Debug, Clone)]
 #[command(name = "http-source")]
@@ -12,7 +16,11 @@ pub struct Args {
     pub port: u16,
 
     /// Host to bind to.
-    #[arg(long, env = "HTTP_SOURCE_HOST", default_value = "0.0.0.0")]
+    ///
+    /// Loopback by default: anything that can reach this port can publish
+    /// events, so listening on another interface is a decision, not a default.
+    /// Pass `--host 0.0.0.0` to take webhooks from other machines.
+    #[arg(long, env = "HTTP_SOURCE_HOST", default_value = DEFAULT_HOST)]
     pub host: String,
 
     /// Path to accept requests on.
@@ -46,4 +54,23 @@ pub struct Args {
     /// proxy in front of this port overwrites the header.
     #[arg(long)]
     pub trust_forwarded_for: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, DEFAULT_HOST};
+    use clap::Parser;
+    use std::net::IpAddr;
+
+    #[test]
+    fn the_default_host_is_loopback() {
+        let host: Result<IpAddr, _> = DEFAULT_HOST.parse();
+        assert!(host.is_ok_and(|ip| ip.is_loopback()));
+    }
+
+    #[test]
+    fn an_explicit_host_overrides_the_default() {
+        let args = Args::try_parse_from(["http-source", "--host", "0.0.0.0"]);
+        assert!(args.is_ok_and(|a| a.host == "0.0.0.0"));
+    }
 }

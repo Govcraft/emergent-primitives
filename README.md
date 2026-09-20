@@ -29,7 +29,7 @@ exec-sink -s data.processed -- tee -a /var/log/events.jsonl
 
 The [`topology-viewer`](primitives/topology-viewer/) sink draws the running topology as a live graph; its README covers the page, `GET /api/topology` and `POST /api/refresh`. The [`sse-sink`](primitives/sse-sink/) sink pushes events to browsers as Server-Sent Events.
 
-**Behavior change in 0.12.0:** `topology-viewer` and `sse-sink` listen on `127.0.0.1` by default. On 0.11.0 and earlier they had no `--host` option and listened on every interface (`0.0.0.0`). Neither has authentication, so exposing them is now a decision: pass `--host 0.0.0.0` (or a specific interface address) if you reach them from another machine or from outside a container. Both also reject arguments they do not know instead of ignoring them. Neither sends `Access-Control-Allow-Origin: *` any more, which let any web page open in a browser on the same machine read them: `topology-viewer` sends no such header (its page needs none), and `sse-sink` sends it only for the origins listed with the repeatable `--allow-origin` (`--allow-origin '*'` restores the old behavior). Both now also look at the host a request names and answer `421 Misdirected Request` unless it is an IP address, `localhost`, or a name listed with the repeatable `--allow-host`, which stops a DNS rebinding page from becoming same-origin with them; a sink reached under a name (a machine name, or the public name a reverse proxy forwards) needs that name listed.
+**Behavior change in 0.12.0:** `http-source`, `topology-viewer` and `sse-sink` listen on `127.0.0.1` by default. `http-source` used to default to `0.0.0.0`, and without `--secret` anything that can reach its port can publish events, so a webhook receiver that other machines call now needs `--host 0.0.0.0` (or `HTTP_SOURCE_HOST`). On 0.11.0 and earlier they had no `--host` option and listened on every interface (`0.0.0.0`). Neither has authentication, so exposing them is now a decision: pass `--host 0.0.0.0` (or a specific interface address) if you reach them from another machine or from outside a container. Both also reject arguments they do not know instead of ignoring them. Neither sends `Access-Control-Allow-Origin: *` any more, which let any web page open in a browser on the same machine read them: `topology-viewer` sends no such header (its page needs none), and `sse-sink` sends it only for the origins listed with the repeatable `--allow-origin` (`--allow-origin '*'` restores the old behavior). Both now also look at the host a request names and answer `421 Misdirected Request` unless it is an IP address, `localhost`, or a name listed with the repeatable `--allow-host`, which stops a DNS rebinding page from becoming same-origin with them; a sink reached under a name (a machine name, or the public name a reverse proxy forwards) needs that name listed.
 
 ## Installation
 
@@ -55,7 +55,7 @@ http-source --port 8080 --path /webhook
 
 **Arguments:**
 - `--port`, `-p`: Port to listen on (default: 8080)
-- `--host`: Host to bind (default: 0.0.0.0)
+- `--host`: Host to bind (default: 127.0.0.1; pass `0.0.0.0` to take webhooks from other machines)
 - `--path`: Exact route to accept requests on, axum capture syntax allowed (default: /)
 - `--secret`: HMAC-SHA256 secret for signature validation (env: `HTTP_SOURCE_SECRET`)
 - `--trust-forwarded-for`: Report `remote_addr` from `X-Forwarded-For` instead of the socket peer. Off by default; only safe behind a proxy that overwrites the header

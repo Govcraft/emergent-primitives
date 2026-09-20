@@ -29,7 +29,7 @@ name = "host"
 long = "host"
 env = "HTTP_SOURCE_HOST"
 required = false
-description = "Host to bind to (default: 0.0.0.0)"
+description = "Host to bind to (default: 127.0.0.1)"
 
 [[args]]
 name = "path"
