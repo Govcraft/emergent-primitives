@@ -18,6 +18,11 @@
  * does so only for the origins named with `--allow-origin` (repeatable, `*`
  * for every origin).
  *
+ * Whatever the address, a request is answered only when the host it names is
+ * an IP address, `localhost`, or a name listed with `--allow-host`
+ * (repeatable): that is what stops a DNS rebinding page, and it is what a
+ * reverse proxy that forwards its own name needs listed.
+ *
  * Connect from a page served by http://localhost:3000:
  *   const source = new EventSource("http://localhost:8080/events");
  *   source.onmessage = (e) => console.log(JSON.parse(e.data));
@@ -31,22 +36,30 @@ import { bindFailure, listenUrl, parseListenArgs } from "./args.ts";
 import type { ListenOptions } from "./args.ts";
 import {
   ALLOW_ORIGIN_FLAG,
-  corsHeaders,
   describeAllowedOrigins,
   parseAllowedOrigins,
 } from "./cors.ts";
-import type { AllowedOrigins } from "./cors.ts";
+import {
+  ALLOW_HOST_FLAG,
+  describeAllowedHosts,
+  parseAllowedHosts,
+} from "./host.ts";
+import { handleRequest } from "./http.ts";
+import type { SinkRules } from "./http.ts";
 
 // ============================================================================
 // CLI
 // ============================================================================
 
-const USAGE =
-  "Usage: sse-sink [--host HOST] [--port PORT] [--allow-origin ORIGIN]...";
+const USAGE = "Usage: sse-sink [--host HOST] [--port PORT] " +
+  "[--allow-origin ORIGIN]... [--allow-host NAME]...";
 
 // Parse the arguments, or say what is wrong with them in one line and exit.
-function optionsOrExit(): ListenOptions & { allowed: AllowedOrigins } {
-  const parsed = parseListenArgs(Deno.args, [ALLOW_ORIGIN_FLAG]);
+function optionsOrExit(): ListenOptions & { rules: SinkRules } {
+  const parsed = parseListenArgs(Deno.args, [
+    ALLOW_ORIGIN_FLAG,
+    ALLOW_HOST_FLAG,
+  ]);
   if (!parsed.ok) {
     console.error(`${parsed.error}. ${USAGE}`);
     Deno.exit(1);
@@ -56,7 +69,19 @@ function optionsOrExit(): ListenOptions & { allowed: AllowedOrigins } {
     console.error(`${origins.error}. ${USAGE}`);
     Deno.exit(1);
   }
-  return { ...parsed.options, allowed: origins.allowed };
+  const hosts = parseAllowedHosts(parsed.repeated[ALLOW_HOST_FLAG]);
+  if (!hosts.ok) {
+    console.error(`${hosts.error}. ${USAGE}`);
+    Deno.exit(1);
+  }
+  return {
+    ...parsed.options,
+    rules: {
+      bound: parsed.options.host,
+      allowedHosts: hosts.hosts,
+      allowedOrigins: origins.allowed,
+    },
+  };
 }
 
 // ============================================================================
@@ -84,44 +109,23 @@ function broadcast(msg: EmergentMessage): void {
   }
 }
 
-function handleRequest(req: Request): Response {
-  const url = new URL(req.url);
-
-  if (url.pathname === "/events") {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        clients.add(controller);
-      },
-      cancel(controller) {
-        clients.delete(controller);
-      },
-    });
-
-    return new Response(body, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        "connection": "keep-alive",
-        ...corsHeaders(req.headers.get("origin"), allowed),
-      },
-    });
-  }
-
-  if (url.pathname === "/health") {
-    return new Response(
-      JSON.stringify({ ok: true, clients: clients.size }),
-      { headers: { "content-type": "application/json" } },
-    );
-  }
-
-  return new Response("Not Found", { status: 404 });
+// One client's stream: registered while it is open, dropped when it closes.
+function openStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      clients.add(controller);
+    },
+    cancel(controller) {
+      clients.delete(controller);
+    },
+  });
 }
 
 // ============================================================================
 // Main
 // ============================================================================
 
-const { host, port, allowed } = optionsOrExit();
+const { host, port, rules } = optionsOrExit();
 
 // Resolve subscribe types from EMERGENT_SUBSCRIBES env var
 let subscribeTypes: string[];
@@ -139,13 +143,22 @@ try {
   Deno.serve({
     hostname: host,
     port,
-    handler: handleRequest,
+    handler: (req) =>
+      handleRequest(
+        req,
+        { openStream, clientCount: () => clients.size },
+        rules,
+      ),
     // Log the address that was bound, not the one that was asked for.
     onListen: (addr) =>
       console.error(
         `[sse-sink] Listening on ${
           listenUrl(addr.hostname, addr.port, "/events")
-        }, readable from a browser by ${describeAllowedOrigins(allowed)}`,
+        }, answering to ${
+          describeAllowedHosts(host, rules.allowedHosts)
+        }, readable from a browser by ${
+          describeAllowedOrigins(rules.allowedOrigins)
+        }`,
       ),
   });
 } catch (err) {

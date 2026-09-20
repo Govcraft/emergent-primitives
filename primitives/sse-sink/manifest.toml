@@ -35,6 +35,12 @@ long = "allow-origin"
 required = false
 description = "Browser origin allowed to read the stream, such as http://localhost:3000 (repeatable; default: none, so no page on another origin can read it; '*' allows every origin)"
 
+[[args]]
+name = "allow-host"
+long = "allow-host"
+required = false
+description = "Host name the sink answers to besides IP addresses and localhost, such as the public name of a reverse proxy in front of it (repeatable; a request naming any other host gets 421, which is what stops DNS rebinding)"
+
 # Binary Downloads
 #
 # Release targets. The archive for each is
