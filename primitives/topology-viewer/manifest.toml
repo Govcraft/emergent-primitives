@@ -10,13 +10,18 @@ kind = "sink"
 description = "Real-time workflow visualization with D3.js force-directed graph"
 homepage = "https://github.com/Govcraft/emergent-primitives"
 license = "MIT"
-runtime = "deno"
 tags = ["visualization", "monitoring", "dashboard", "d3"]
 
 [messages]
 subscribes = ["system.started.*", "system.stopped.*", "system.error.*", "system.response.topology"]
 
 # CLI Arguments
+[[args]]
+name = "host"
+long = "host"
+required = false
+description = "Address to serve the visualization on (default: 127.0.0.1; use 0.0.0.0 to expose it on every interface)"
+
 [[args]]
 name = "port"
 long = "port"

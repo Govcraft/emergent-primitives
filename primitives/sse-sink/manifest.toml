@@ -10,13 +10,18 @@ kind = "sink"
 description = "Push pipeline events to browsers via Server-Sent Events"
 homepage = "https://github.com/Govcraft/emergent-primitives"
 license = "MIT"
-runtime = "deno"
 tags = ["sse", "realtime", "browser", "dashboard", "monitoring"]
 
 [messages]
 subscribes = ["*"]
 
 # CLI Arguments
+[[args]]
+name = "host"
+long = "host"
+required = false
+description = "Address to serve the SSE stream on (default: 127.0.0.1; use 0.0.0.0 to expose it on every interface)"
+
 [[args]]
 name = "port"
 long = "port"
