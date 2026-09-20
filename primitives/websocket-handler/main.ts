@@ -242,7 +242,7 @@ async function closeAllForShutdown(): Promise<void> {
   if (pending.length === 0) return;
   for (const conn of pending) closeConnection(conn, "shutdown");
 
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, SHUTDOWN_CLOSE_DEADLINE_MS);
   });
