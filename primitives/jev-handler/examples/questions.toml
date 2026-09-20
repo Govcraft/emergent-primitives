@@ -10,7 +10,7 @@
 #
 # This file covers all three System One question types.
 
-# noul — a yes/no judgement. The answer is a bare probability of "yes" in
+# noul: a yes/no judgement. The answer is a bare probability of "yes" in
 # 0..=1, with no separate confidence. `criteria` is optional; when present it
 # describes the two poles and may only use the keys "true" and "false".
 [questions.lure]
@@ -23,7 +23,7 @@ criteria = { "true" = "There is something concrete to act on: a link, an attachm
 type = "noul"
 instructions = "Does the message state a specific date, time, or deadline?"
 
-# choice — one option out of a defined set. `criteria` is required: a map of
+# choice: one option out of a defined set. `criteria` is required: a map of
 # option to rubric description, with at least two options. The answer carries
 # the chosen option, a confidence, and the full probability distribution.
 [questions.kind]
@@ -36,7 +36,7 @@ cold_pitch = "An unsolicited sales or partnership approach from a real sender."
 vendor_notice = "A legitimate operational notice from a service the organisation already uses."
 personal = "Ordinary correspondence from a known individual."
 
-# score — a position along an ordered rubric. `criteria` is required: an
+# score: a position along an ordered rubric. `criteria` is required: an
 # ordered array of at least two level descriptions. Order is the meaning, and
 # the answer may land between levels, so treat it as a float.
 [questions.pressure]
