@@ -26,7 +26,7 @@ Or download from [GitHub Releases](https://github.com/Govcraft/emergent-primitiv
 
 Without `--shell`, `--command` is the name of one executable and its arguments go in `--args`. `--command "df -h"` looks for a program literally named `df -h` and the source exits with `No such file or directory`. Pass `--shell sh` when you want a command line with arguments, pipes or variables in one string.
 
-An `--args` value that starts with a hyphen has to be attached with `=`, as in `--args=-h`. Written as `--args "-h"` it is read as a flag and rejected.
+An `--args` value that starts with a hyphen works either way: `--args "-h"` and `--args=-h` both pass `-h` to the command. On 0.12.0 and earlier only the attached `=` form parses.
 
 ### emergent.toml
 
