@@ -20,15 +20,16 @@ Or download from
 
 ### CLI Arguments
 
-| Argument     | Default     | Description                                |
-| ------------ | ----------- | ------------------------------------------ |
-| `--host`     | `127.0.0.1` | Address the page and its API are served on |
-| `-p, --port` | `8080`      | Port the page and its API are served on    |
+| Argument       | Default     | Description                                                                                                                                 |
+| -------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--host`       | `127.0.0.1` | Address the page and its API are served on                                                                                                  |
+| `-p, --port`   | `8080`      | Port the page and its API are served on                                                                                                     |
+| `--allow-host` | none        | A host name the viewer answers to besides IP addresses and `localhost`, such as the public name of a reverse proxy. Repeat it for each name |
 
-Both take `--flag value` or `--flag=value`. An argument the viewer does not
-know, a missing value, or a port outside 1 to 65535 prints one line and exits
-`1`, so a misspelled `--host` never leaves the page on a different address than
-the one asked for.
+Each takes `--flag value` or `--flag=value`. An argument the viewer does not
+know, a missing value, a port outside 1 to 65535, or an `--allow-host` that is
+not a bare host name prints one line and exits `1`, so a misspelled `--host`
+never leaves the page on a different address than the one asked for.
 
 ### Who can reach the page
 
@@ -55,6 +56,52 @@ The viewer has no authentication. Prefer a specific interface address
 on a network you do not control. `--host ::1` and `--host ::` select IPv6. An
 address the machine does not have, or a port already in use, prints one line
 (`Cannot listen on http://203.0.113.1:8080/: ...`) and exits `1`.
+
+### Which host names it answers to
+
+After primitives 0.11.0 the viewer looks at the host every request names and
+answers `421 Misdirected Request` unless it is one of:
+
+- an IP address (`127.0.0.1:8080`, `192.168.1.20:8080`, `[::1]:8080`), whatever
+  address the viewer is bound to,
+- `localhost`,
+- the name given to `--host`, when that is a name,
+- a name listed with `--allow-host` (repeatable).
+
+The port is not compared. The startup line says which hosts are answered:
+
+```text
+[topology-viewer] HTTP server listening on http://127.0.0.1:8080/, answering to any IP address, localhost, app.example
+```
+
+This is what stops DNS rebinding. Binding `127.0.0.1` keeps other machines out
+and the absence of `Access-Control-Allow-Origin` keeps other origins out, but a
+page on `attacker.example` can re-resolve its own name to `127.0.0.1`, and from
+then on the browser treats the viewer as that page's own origin. The one thing
+the page cannot choose is the `Host` the browser sends, which stays
+`attacker.example`. An address cannot be rebound and `localhost` is not the
+attacker's to resolve, so those are always answered; every other name has to be
+one you listed.
+
+**This is a behavior change.** On 0.11.0 and earlier the `Host` was never looked
+at. A viewer reached by IP address or as `localhost` needs no change, and that
+covers a published container port and an SSH port forward. What needs
+`--allow-host` is a name:
+
+| You open the page as                                                                                                                               | Needs                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `http://127.0.0.1:8080`, `http://localhost:8080`, `http://192.168.1.20:8080`                                                                       | nothing                                            |
+| `http://myhost:8080`, `http://myhost.local:8080`                                                                                                   | `--allow-host myhost`, `--allow-host myhost.local` |
+| `https://app.example` through a reverse proxy that forwards the name it was asked for (Caddy by default, nginx with `proxy_set_header Host $host`) | `--allow-host app.example`                         |
+| the same through a proxy that sends the upstream address as `Host` (nginx by default)                                                              | nothing                                            |
+
+This holds whatever `--host` is: `--host 0.0.0.0` exposes the viewer to other
+machines and does not make it answer to their names for it. A value is a bare
+host name, stored lower case and in its ASCII form. A scheme, a port, a path or
+a `*` is refused with one line and exit `1`: names are compared whole, there are
+no patterns, so `--allow-host '*.app.example'` would be listed and never match.
+`attacker.localhost` and other names under `localhost` are names like any other
+and need listing.
 
 ### Which pages can read it
 
@@ -203,10 +250,12 @@ deno check main.ts
 deno test -A
 ```
 
-`args.ts` parses `--host` and `--port` as a pure function; it is the same file
-as sse-sink's, byte for byte, and the repeatable flags it can collect are ones
-the viewer does not name. `graph.ts` holds the graph state and the pure
-functions behind it. `http.ts` holds the request handling, written against an
-interface so `http_test.ts` drives it with plain `Request` objects and no
-listening socket. `main.ts` is the shell: arguments, the engine connection, and
-`Deno.serve`.
+`args.ts` parses the arguments as a pure function; it is the same file as
+sse-sink's, byte for byte, and collects the repeatable flags a caller names,
+which for the viewer is `--allow-host`. `host.ts` parses those names and decides
+`(Host header, bound address, allowed hosts) -> accept | refuse`, pure, tested
+in `host_test.ts`, and also the same file as sse-sink's. `graph.ts` holds the
+graph state and the pure functions behind it. `http.ts` holds the request
+handling, written against an interface so `http_test.ts` drives it with plain
+`Request` objects and no listening socket. `main.ts` is the shell: arguments,
+the engine connection, and `Deno.serve`.
