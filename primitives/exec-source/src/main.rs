@@ -54,7 +54,7 @@ struct Args {
     command: String,
 
     /// Command arguments (space-separated).
-    #[arg(short, long, env = "EXEC_SOURCE_ARGS")]
+    #[arg(short, long, env = "EXEC_SOURCE_ARGS", allow_hyphen_values = true)]
     args: Option<String>,
 
     /// Optional interval in milliseconds for repeated execution (0 = run once).
@@ -281,6 +281,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_accept_values_starting_with_a_hyphen() {
+        let parsed = Args::try_parse_from([
+            "exec-source",
+            "--command",
+            "ls",
+            "--args",
+            "-la",
+        ])
+        .unwrap_or_else(|e| panic!("expected hyphen-prefixed argument to parse: {e}"));
+
+        assert_eq!(parsed.args.as_deref(), Some("-la"));
+    }
 
     fn args_with(correlate: bool, correlation_id: Option<&str>) -> Args {
         Args {
