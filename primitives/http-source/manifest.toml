@@ -36,7 +36,7 @@ name = "path"
 long = "path"
 env = "HTTP_SOURCE_PATH"
 required = false
-description = "URL path to listen on (default: /)"
+description = "URL path to listen on (default: /); no ? or #, and characters a request carries percent-encoded must be written encoded, such as /h%C3%BCk"
 
 [[args]]
 name = "secret"

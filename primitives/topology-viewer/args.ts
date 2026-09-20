@@ -25,9 +25,16 @@ export interface ListenOptions {
   readonly port: number;
 }
 
+/** Every value given for each repeatable flag, in the order written. */
+export type RepeatedValues = Readonly<Record<string, readonly string[]>>;
+
 /** The outcome of parsing: the options, or the one thing that is wrong. */
 export type ParsedArgs =
-  | { readonly ok: true; readonly options: ListenOptions }
+  | {
+    readonly ok: true;
+    readonly options: ListenOptions;
+    readonly repeated: RepeatedValues;
+  }
   | { readonly ok: false; readonly error: string };
 
 /** One flag and its value, from `--flag value`, `--flag=value` or `-f value`. */
@@ -68,27 +75,39 @@ function parseHost(value: string): string | null {
 }
 
 /**
- * Parse `--host` and `--port` (or `-p`).
+ * Parse `--host` and `--port` (or `-p`), plus the flags named in `repeatable`.
  *
- * A repeated flag takes its last value. Anything unrecognized is an error
- * rather than ignored: a misspelled `--host` must not quietly leave the server
- * on a different address than the operator asked for.
+ * A repeated `--host` or `--port` takes its last value. A flag named in
+ * `repeatable` is one only some primitives have (sse-sink passes
+ * `--allow-origin`, topology-viewer passes none): every value it is given is
+ * collected under its name, in order and unexamined, for the caller to parse.
+ * Anything else is an error rather than ignored: a misspelled `--host` must not
+ * quietly leave the server on a different address than the operator asked for.
  */
-export function parseListenArgs(args: readonly string[]): ParsedArgs {
+export function parseListenArgs(
+  args: readonly string[],
+  repeatable: readonly string[] = [],
+): ParsedArgs {
   let host = DEFAULT_HOST;
   let port = DEFAULT_PORT;
+  const repeated: Record<string, string[]> = Object.fromEntries(
+    repeatable.map((name) => [name, []]),
+  );
 
   for (let index = 0; index < args.length;) {
     const { flag, value, consumed } = splitFlag(args, index);
+    const collects = repeatable.includes(flag);
 
-    if (flag !== "--host" && flag !== "--port" && flag !== "-p") {
+    if (!collects && flag !== "--host" && flag !== "--port" && flag !== "-p") {
       return { ok: false, error: `Unknown argument "${args[index]}"` };
     }
     if (value === undefined) {
       return { ok: false, error: `${flag} needs a value` };
     }
 
-    if (flag === "--host") {
+    if (collects) {
+      repeated[flag].push(value);
+    } else if (flag === "--host") {
       const parsed = parseHost(value);
       if (parsed === null) {
         return {
@@ -113,7 +132,7 @@ export function parseListenArgs(args: readonly string[]): ParsedArgs {
     index += consumed;
   }
 
-  return { ok: true, options: { host, port } };
+  return { ok: true, options: { host, port }, repeated };
 }
 
 /**

@@ -26,6 +26,18 @@
 //! query string starts, and a fragment never leaves the client. The source would
 //! start, report healthy, and answer 404 to everything, so that is refused too.
 //!
+//! The same goes for a literal character that no request path carries as
+//! itself. The server answers 400 to a raw space, control character, `<`, `>`
+//! or backtick before the router is asked, and curl and browsers send anything
+//! outside ASCII percent-encoded. The router compares the raw, still encoded
+//! path, so `--path /hük` is never reached by a request for `/h%C3%BCk`. Those
+//! characters are refused with the spelling to use instead. Registering the
+//! encoded form quietly was the other option, and was not taken: the published
+//! `path` is the encoded one, so a downstream `select(.path == ...)` has to be
+//! written that way, and the config should show what it has to match. Escapes
+//! are also compared byte for byte (`%C3%BC` is not `%c3%bc`), which a silent
+//! rewrite would hide.
+//!
 //! Two things that look like they should be rules are not. Repeating a capture
 //! name (`/{id}/{id}`) is accepted by the router, and since this primitive never
 //! extracts captures (it publishes the concrete path the client asked for)
@@ -54,7 +66,7 @@ pub const MAX_CAPTURES: usize = 25;
 ///
 /// `Display` states the rule that was broken, without the offending value, so
 /// the caller can name the value once in its own words.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutePathError {
     /// The path is the empty string.
     Empty,
@@ -82,6 +94,14 @@ pub enum RoutePathError {
     ContainsQuery,
     /// A `#` outside a capture name. The router accepts it and never matches it.
     ContainsFragment,
+    /// A literal character that reaches the router only percent-encoded, or
+    /// not at all. The router accepts it and never matches it.
+    UnencodedLiteral {
+        /// The first such character.
+        character: char,
+        /// The path with every such character percent-encoded.
+        encoded_path: String,
+    },
 }
 
 impl RoutePathError {
@@ -91,7 +111,10 @@ impl RoutePathError {
     /// never match.
     #[must_use]
     pub fn is_router_rule(&self) -> bool {
-        !matches!(self, Self::ContainsQuery | Self::ContainsFragment)
+        !matches!(
+            self,
+            Self::ContainsQuery | Self::ContainsFragment | Self::UnencodedLiteral { .. }
+        )
     }
 }
 
@@ -137,6 +160,13 @@ impl fmt::Display for RoutePathError {
             Self::ContainsQuery => write!(
                 f,
                 "a route path cannot contain '?', the query string is not part of the route and is published in the `query` field"
+            ),
+            Self::UnencodedLiteral {
+                character,
+                encoded_path,
+            } => write!(
+                f,
+                "a route path cannot contain {character:?} unencoded, a request carries it percent-encoded and the route must be spelled the same way: {encoded_path:?}"
             ),
             Self::ContainsFragment => write!(
                 f,
@@ -205,7 +235,7 @@ pub fn validate_route_path(path: &str) -> Result<(), RoutePathError> {
     }
     let route = unescape(path);
     let captures = validate_captures(&route)?;
-    validate_literals(&route, &captures)
+    validate_literals(path, &spans_in_path(&route, &captures))
 }
 
 /// One byte of the route once `{{` and `}}` have collapsed to a single brace.
@@ -214,6 +244,8 @@ struct RouteByte {
     byte: u8,
     /// True for a brace that was written doubled, so it is a literal.
     escaped: bool,
+    /// Where the byte sits in the path as it was written.
+    offset: usize,
 }
 
 /// Collapses `{{` and `}}`, left to right, remembering which braces those were.
@@ -229,6 +261,7 @@ fn unescape(path: &str) -> Vec<RouteByte> {
         route.push(RouteByte {
             byte,
             escaped: doubled,
+            offset: index,
         });
         index += if doubled { 2 } else { 1 };
     }
@@ -262,23 +295,76 @@ fn validate_captures(route: &[RouteByte]) -> Result<Vec<Range<usize>>, RoutePath
     }
 }
 
-/// Refuses a `?` or a `#` in the text between the captures.
-///
-/// A request's path never holds either byte, so literal text containing one
-/// can never match. Inside a capture name they are only part of a name, and the
-/// route works, so `captures` is skipped.
-fn validate_literals(route: &[RouteByte], captures: &[Range<usize>]) -> Result<(), RoutePathError> {
-    let in_capture = |index: usize| captures.iter().any(|capture| capture.contains(&index));
-    let literal = route
+/// Turns capture spans over `route` into byte spans over the written path.
+fn spans_in_path(route: &[RouteByte], captures: &[Range<usize>]) -> Vec<Range<usize>> {
+    captures
         .iter()
-        .enumerate()
-        .filter(|(index, _)| !in_capture(*index))
-        .map(|(_, current)| current.byte);
+        .filter_map(|capture| {
+            let open = route.get(capture.start)?;
+            let close = route.get(capture.end.checked_sub(1)?)?;
+            Some(open.offset..close.offset + 1)
+        })
+        .collect()
+}
 
-    for byte in literal {
-        match byte {
-            b'?' => return Err(RoutePathError::ContainsQuery),
-            b'#' => return Err(RoutePathError::ContainsFragment),
+/// The characters of `path` outside `captures`, with their byte offsets.
+fn literal_chars<'a>(
+    path: &'a str,
+    captures: &'a [Range<usize>],
+) -> impl Iterator<Item = (usize, char)> + 'a {
+    path.char_indices()
+        .filter(|(offset, _)| !captures.iter().any(|capture| capture.contains(offset)))
+}
+
+/// Whether a literal `character` never reaches the router as itself.
+///
+/// The server answers 400 to a raw control character, space, `<`, `>` or
+/// backtick. Anything outside ASCII is sent percent-encoded by curl and by
+/// browsers. The characters between those two groups (`"`, `|`, `^`, `[`, `]`,
+/// `\`, braces) are outside what a URL path strictly allows, but curl sends
+/// them as they are and the route matches, so they are left alone.
+fn needs_encoding(character: char) -> bool {
+    character.is_ascii_control()
+        || matches!(character, ' ' | '<' | '>' | '`')
+        || !character.is_ascii()
+}
+
+/// `path` with every literal character that [`needs_encoding`] percent-encoded,
+/// as UTF-8 and with uppercase hex, which is how curl and browsers send it.
+/// Capture names are left as written.
+fn encode_literals(path: &str, captures: &[Range<usize>]) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    let mut utf8 = [0; 4];
+    for (offset, character) in path.char_indices() {
+        let literal = !captures.iter().any(|capture| capture.contains(&offset));
+        if literal && needs_encoding(character) {
+            for byte in character.encode_utf8(&mut utf8).bytes() {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            encoded.push(character);
+        }
+    }
+    encoded
+}
+
+/// Refuses the literal text a request can never match: a `?`, a `#`, or a
+/// character that [`needs_encoding`].
+///
+/// A request's path never holds any of them as written. Inside a capture name
+/// they are only part of a name, and the route works, so `captures` (byte spans
+/// over `path`) are skipped.
+fn validate_literals(path: &str, captures: &[Range<usize>]) -> Result<(), RoutePathError> {
+    for (_, character) in literal_chars(path, captures) {
+        match character {
+            '?' => return Err(RoutePathError::ContainsQuery),
+            '#' => return Err(RoutePathError::ContainsFragment),
+            _ if needs_encoding(character) => {
+                return Err(RoutePathError::UnencodedLiteral {
+                    character,
+                    encoded_path: encode_literals(path, captures),
+                });
+            }
             _ => {}
         }
     }
@@ -382,7 +468,13 @@ mod tests {
             "/hook/{a}}}",
             "/hook/{a}}b}",
             "/hook/{ü}",
-            "/hük",
+            "/hook/{a b}/x",
+            // Written the way a request carries it, a non-ASCII literal is fine.
+            "/h%C3%BCk",
+            "/hook%20with%20space",
+            // Outside what a URL path strictly allows, but curl sends these as
+            // they are and the route matches.
+            "/a\"b|c^d[e]",
             // `?` and `#` are only refused in literal text. In a capture name
             // they are part of the name and the route matches as usual.
             "/hook/{id?}",
@@ -459,7 +551,11 @@ mod tests {
         ];
 
         for (path, expected) in cases {
-            assert_eq!(validate_route_path(path), Err(*expected), "path {path:?}");
+            assert_eq!(
+                validate_route_path(path),
+                Err(expected.clone()),
+                "path {path:?}"
+            );
         }
     }
 
@@ -498,6 +594,73 @@ mod tests {
     }
 
     #[test]
+    fn unencoded_literals_table() {
+        // (path, first offending character, the spelling to use)
+        let cases: &[(&str, char, &str)] = &[
+            ("/hük", 'ü', "/h%C3%BCk"),
+            ("/hook with space", ' ', "/hook%20with%20space"),
+            ("/a b/ü", ' ', "/a%20b/%C3%BC"),
+            ("/日本", '日', "/%E6%97%A5%E6%9C%AC"),
+            ("/emoji/🚀", '🚀', "/emoji/%F0%9F%9A%80"),
+            ("/tab\there", '\t', "/tab%09here"),
+            ("/del\u{7f}x", '\u{7f}', "/del%7Fx"),
+            ("/lt<x", '<', "/lt%3Cx"),
+            ("/gt>x", '>', "/gt%3Ex"),
+            ("/bt`x", '`', "/bt%60x"),
+            // Capture names are not literals: they stay as written, and only
+            // the text around them is encoded.
+            ("/ü/{naïve}/ü", 'ü', "/%C3%BC/{naïve}/%C3%BC"),
+            ("/a b/{*the rest}", ' ', "/a%20b/{*the rest}"),
+            // Doubled braces are literals and need no encoding themselves.
+            ("/{{ü}}", 'ü', "/{{%C3%BC}}"),
+        ];
+
+        for (path, character, encoded) in cases {
+            assert_eq!(
+                validate_route_path(path),
+                Err(RoutePathError::UnencodedLiteral {
+                    character: *character,
+                    encoded_path: (*encoded).to_string(),
+                }),
+                "path {path:?}"
+            );
+            assert_eq!(
+                validate_route_path(encoded),
+                Ok(()),
+                "the suggested spelling {encoded:?} must itself be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn whichever_unmatchable_literal_comes_first_is_named() {
+        assert_eq!(
+            validate_route_path("/a?b ü"),
+            Err(RoutePathError::ContainsQuery)
+        );
+        assert!(matches!(
+            validate_route_path("/a b?c"),
+            Err(RoutePathError::UnencodedLiteral { character: ' ', .. })
+        ));
+        // A router rule still wins.
+        assert_eq!(
+            validate_route_path("/ü/{"),
+            Err(RoutePathError::UnclosedCapture)
+        );
+    }
+
+    #[test]
+    fn the_unencoded_rule_shows_the_spelling_to_use() {
+        let text = validate_route_path("/hook with space")
+            .err()
+            .map(|rule| rule.to_string())
+            .unwrap_or_default();
+        assert!(text.contains("' '"), "{text}");
+        assert!(text.contains("\"/hook%20with%20space\""), "{text}");
+        assert!(!text.contains('\n'), "{text}");
+    }
+
+    #[test]
     fn the_query_rule_says_where_the_query_string_goes() {
         let text = RoutePathError::ContainsQuery.to_string();
         assert!(text.contains("`query` field"), "{text}");
@@ -508,6 +671,13 @@ mod tests {
     fn only_the_unmatchable_rules_are_not_router_rules() {
         assert!(!RoutePathError::ContainsQuery.is_router_rule());
         assert!(!RoutePathError::ContainsFragment.is_router_rule());
+        assert!(
+            !RoutePathError::UnencodedLiteral {
+                character: 'ü',
+                encoded_path: "/%C3%BC".to_string(),
+            }
+            .is_router_rule()
+        );
         assert!(RoutePathError::MissingLeadingSlash.is_router_rule());
         assert!(RoutePathError::WildcardNotLast.is_router_rule());
     }
@@ -530,6 +700,10 @@ mod tests {
             E::TooManyCaptures,
             E::ContainsQuery,
             E::ContainsFragment,
+            E::UnencodedLiteral {
+                character: '\n',
+                encoded_path: "/%0A".to_string(),
+            },
         ];
 
         for rule in rules {

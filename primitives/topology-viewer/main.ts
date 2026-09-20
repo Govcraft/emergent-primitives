@@ -26,7 +26,7 @@ import {
   parseTopologyResponse,
   TopologyGraph,
 } from "./graph.ts";
-import { handleRequest, singleFlight } from "./http.ts";
+import { EVENT_STREAM_HEADERS, handleRequest, singleFlight } from "./http.ts";
 import type { EnginePrimitive, TopologyNode } from "./types.ts";
 
 // Parse the arguments, or say what is wrong with them in one line and exit.
@@ -96,14 +96,7 @@ function createSSEStream(graph: TopologyGraph): Response {
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-    },
-  });
+  return new Response(stream, { headers: EVENT_STREAM_HEADERS });
 }
 
 // Delay helper
