@@ -33,7 +33,7 @@ never leaves the page on a different address than the one asked for.
 
 ### Who can reach the page
 
-After primitives 0.11.0 the viewer listens on `127.0.0.1` unless `--host` says
+From primitives 0.12.0 the viewer listens on `127.0.0.1` unless `--host` says
 otherwise. The page shows every primitive's name, topics, state and PID, and
 `POST /api/refresh` makes the viewer do work, so putting it on the network is a
 decision. The startup line prints the address that was bound:
@@ -59,7 +59,7 @@ address the machine does not have, or a port already in use, prints one line
 
 ### Which host names it answers to
 
-After primitives 0.11.0 the viewer looks at the host every request names and
+From primitives 0.12.0 the viewer looks at the host every request names and
 answers `421 Misdirected Request` unless it is one of:
 
 - an IP address (`127.0.0.1:8080`, `192.168.1.20:8080`, `[::1]:8080`), whatever
@@ -105,7 +105,7 @@ and need listing.
 
 ### Which pages can read it
 
-After primitives 0.11.0 no response carries `Access-Control-Allow-Origin`. The
+From primitives 0.12.0 no response carries `Access-Control-Allow-Origin`. The
 page, `GET /events`, `GET /api/topology` and `POST /api/refresh` are one origin,
 and a page needs no permission to read its own origin, so nothing about the
 viewer changes.
@@ -221,7 +221,7 @@ Requests that overlap, with each other or with the 5 second re-read, share one
 engine request. Like every reply of the viewer it carries no
 `Access-Control-Allow-Origin` header.
 
-After primitives 0.11.0 the button calls `POST /api/refresh`. On 0.11.0 and
+From primitives 0.12.0 the button calls `POST /api/refresh`. On 0.11.0 and
 earlier it first called a `/refresh` URL on a hard-coded `localhost` port, the
 address of a `topology-api` example source that nothing in this repository
 serves. Every click made a cross-origin request to a port the operator never

@@ -56,7 +56,7 @@ pattern `--path` was configured with.
 
 ### An invalid `--path`
 
-After primitives 0.11.0 the route is checked before the source connects to the
+From primitives 0.12.0 the route is checked before the source connects to the
 engine or binds its port. A value the router would refuse prints one line that
 names the value and the rule, and the process exits with status `1`:
 
@@ -93,7 +93,7 @@ the client. The source would start, report healthy, and answer `404` to every
 request. The query string is not part of the route. Configure `--path /hook`,
 and every request to `/hook?x=1` is accepted and published with
 `"path": "/hook"` and `"query": "x=1"`, ready for a downstream
-`select(.query == "x=1")`. After primitives 0.11.0 such a path is refused at
+`select(.query == "x=1")`. From primitives 0.12.0 such a path is refused at
 startup like the others. A `?` or `#` inside a capture name (`/hook/{id?}`) is
 only part of the name and is accepted.
 
@@ -101,7 +101,7 @@ The last row is the same kind of rule. The router compares the route with the
 request path as it arrived, still percent-encoded, and never decodes either
 side. A client asked for `/hük` sends `/h%C3%BCk`, which the route `/hük` does
 not equal, so that source too would start, report healthy, and answer `404` to
-every request. After primitives 0.11.0 the path is refused and the message
+every request. From primitives 0.12.0 the path is refused and the message
 shows the spelling to configure:
 
 ```text

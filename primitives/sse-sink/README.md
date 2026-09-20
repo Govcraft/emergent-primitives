@@ -49,7 +49,7 @@ the sink to `*`, which is every event in the pipeline, payloads included.
 
 ### Who can reach the stream
 
-After primitives 0.11.0 the sink listens on `127.0.0.1` unless `--host` says
+From primitives 0.12.0 the sink listens on `127.0.0.1` unless `--host` says
 otherwise. The startup line prints the address that was bound:
 
 ```text
@@ -78,7 +78,7 @@ not have, or a port already in use, prints one line
 
 ### Which host names it answers to
 
-After primitives 0.11.0 the sink looks at the host every request names and
+From primitives 0.12.0 the sink looks at the host every request names and
 answers `421 Misdirected Request` unless it is one of:
 
 - an IP address (`127.0.0.1:8080`, `192.168.1.20:8080`, `[::1]:8080`), whatever
@@ -130,7 +130,7 @@ connect to `http://127.0.0.1:8080/events`. What stops the page from reading the
 reply is the browser's same-origin rule, which the server lifts by naming the
 page's origin in `Access-Control-Allow-Origin`.
 
-After primitives 0.11.0 the sink sends that header only for the origins listed
+From primitives 0.12.0 the sink sends that header only for the origins listed
 with `--allow-origin`, and the startup line says who they are:
 
 ```toml
