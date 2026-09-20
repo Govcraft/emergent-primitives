@@ -13,6 +13,38 @@ Official marketplace primitives for the [Emergent](https://github.com/Govcraft/e
 | [`stream-runner`](primitives/stream-runner/) | handler | Emit a JSON collection one item at a time, waiting for downstream ack before advancing |
 | [`jev-handler`](primitives/jev-handler/) | handler | Ask TypeSafe System One typed questions about event payloads |
 | [`websocket-handler`](primitives/websocket-handler/) | handler | Bidirectional WebSocket bridge: connect, send and receive frames, and learn how each connection ended |
+| [`sse-sink`](primitives/sse-sink/) | sink | Push events to browsers as Server-Sent Events |
+| [`topology-viewer`](primitives/topology-viewer/) | sink | Draw the running topology as a live graph |
+
+## New in 0.12.0: jev-handler
+
+`jev-handler` makes a judgment a pipeline step. It asks [TypeSafe System One](https://docs.typesafe.ai) (Jev) a fixed set of typed questions about each event (yes/no, pick one, score on a rubric) and publishes the answers with calibrated confidence. The handler makes no decision itself: `exec-handler` routers running `jq` selectors turn confidence into behavior, so a threshold is a config edit.
+
+```bash
+emergent marketplace install jev-handler
+export TYPESAFE_API_KEY="..."
+```
+
+```toml
+[[handlers]]
+name = "judge"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = ["-s", "mail.fetched", "--questions", "./questions.toml", "--state-pointer", "/body"]
+subscribes = ["mail.fetched"]
+publishes = ["jev.answered", "jev.error"]
+
+[[handlers]]
+name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.answered", "--publish-as", "triage.confident",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["jev.answered"]
+publishes = ["triage.confident"]
+```
+
+The [jev-handler section](#jev-handler) below covers the questions file, the published shapes, routing on `error.kind` and rate limits. The engine repository has a [guide](https://github.com/Govcraft/emergent/blob/main/docs/primitives/jev-handler.md) and a [runnable triage example](https://github.com/Govcraft/emergent/tree/main/config/examples/jev-triage).
+
+## The exec trio
 
 The exec trio covers most use cases without writing code:
 
@@ -39,6 +71,7 @@ Install via the Emergent marketplace CLI:
 emergent marketplace install http-source
 emergent marketplace install exec-handler
 emergent marketplace install exec-sink
+emergent marketplace install jev-handler
 ```
 
 Or download binaries directly from [GitHub Releases](https://github.com/Govcraft/emergent-primitives/releases).
@@ -89,7 +122,7 @@ exec-source --command date --interval 5000
 A source is where a trail begins. `--correlate` stamps one correlation ID on
 everything the source publishes; every downstream `exec-handler` carries it
 forward, so the whole flow is one query against the event store's
-`correlation_id` column. `--correlation-id` adopts an ID minted elsewhere —
+`correlation_id` column. `--correlation-id` adopts an ID minted elsewhere:
 this is how a run that spans more than one engine stays a single trail.
 
 The command reads the same value from `EMERGENT_CORRELATION_ID`, so a shell
@@ -121,12 +154,12 @@ exec-handler -s timer.tick --publish-as data.transformed -- jq '.data | keys'
 **Subscribes:** configurable via `--subscribe`
 **Publishes:** `exec.output`, `exec.error` (configurable)
 
-Published messages inherit the inbound message's `correlation_id` — a
-transformation belongs to the same logical request as its input — alongside the
+Published messages inherit the inbound message's `correlation_id` (a
+transformation belongs to the same logical request as its input) alongside the
 `causation_id` that links it to the specific message it came from.
 
 At `--max-concurrent 1` (the default) messages are processed serially in
-arrival order. Above 1, up to N commands run simultaneously — the right choice
+arrival order. Above 1, up to N commands run simultaneously, the right choice
 for slow, IO-bound steps like an LLM call:
 
 ```bash
@@ -139,7 +172,7 @@ subscription stream is only pulled when a slot is free, so queued bursts
 backpressure the engine rather than spawning unbounded processes, and in-flight
 executions finish and publish before shutdown.
 
-Every failure — non-zero exit, timeout, spawn failure — publishes an error
+Every failure (non-zero exit, timeout, spawn failure) publishes an error
 event. To use exit-code filtering (e.g. `jq -e 'select(...)'`, which drops a
 message by exiting 1 with no stderr), list the filtering exit codes explicitly:
 
@@ -164,7 +197,7 @@ merge into, so it is carried under `input` instead; an inbound `error` key is
 overwritten by the reserved one.
 
 A timed-out command is terminated, not merely abandoned. Each command runs in
-its own process group, so the timeout reclaims anything the command started —
+its own process group, so the timeout reclaims anything the command started:
 the shell *and* the work it spawned. Termination is `SIGTERM`, then `SIGKILL` after
 `--kill-grace-ms` (default 5000), giving a command holding real state the chance
 to finish a write without letting one that ignores signals run forever.
@@ -200,7 +233,7 @@ subscription stream and a full drain of in-flight commands before shutdown.
 
 Sinks cannot publish, so failures are reported on stderr (captured in the
 engine's primitive logs) tagged with the causing message ID. Exit codes listed
-in `--silent-exit-codes` are not reported — for commands that use a non-zero
+in `--silent-exit-codes` are not reported. This is for commands that use a non-zero
 exit to mean something other than failure, e.g.
 `--silent-exit-codes 1 -- grep -q ERROR`. Unlike exec-handler there is no
 empty-stderr condition: the sink hands stderr through to the terminal rather
@@ -411,20 +444,20 @@ TypeSafe request's `questions` map one-to-one, so the vendor's documentation
 describes this file too:
 
 ```toml
-# noul — a yes/no judgement; the answer is a bare probability in 0..=1.
+# noul: a yes/no judgement; the answer is a bare probability in 0..=1.
 # `criteria` is optional and may only use the keys "true" and "false".
 [questions.lure]
 type = "noul"
 instructions = "Does this message try to get the reader to click a link or reply with information?"
 criteria = { "true" = "There is something concrete to act on.", "false" = "The message is informational only." }
 
-# choice — one option out of a defined set; at least two options.
+# choice: one option out of a defined set; at least two options.
 [questions.kind]
 type = "choice"
 instructions = "What kind of message is this?"
 criteria = { phish = "Credential theft under a false identity.", cold_pitch = "Unsolicited sales.", vendor_notice = "A legitimate operational notice.", personal = "Ordinary correspondence." }
 
-# score — a position along an ordered rubric; order is the meaning, and the
+# score: a position along an ordered rubric; order is the meaning, and the
 # answer may land between levels.
 [questions.pressure]
 type = "score"
@@ -438,7 +471,7 @@ produce an identical question set. A full example with all three types is in
 
 Validation happens at startup, before the engine is connected, so a misconfigured
 handler never appears healthy in a topology. Unknown keys are rejected rather
-than ignored — a `critera` typo would otherwise leave a choice question with no
+than ignored: a `critera` typo would otherwise leave a choice question with no
 options on every message. Question ids are restricted to
 `[A-Za-z_][A-Za-z0-9_]*` so a downstream router can always write
 `.answers.kind` without quoting.
@@ -487,7 +520,7 @@ carried under `input` instead.
 | `error.kind` | What happened | What to do with the item |
 |---|---|---|
 | `auth` | The credentials were rejected (`401`) | Page a human; the key is wrong or revoked |
-| `billing` | The organization is out of API credit (`402`) | **Page a human, then hold and requeue the item — do not quarantine it.** The request was well-formed and the item is fine; it succeeds unchanged once credit is added |
+| `billing` | The organization is out of API credit (`402`) | **Page a human, then hold and requeue the item. Do not quarantine it.** The request was well-formed and the item is fine; it succeeds unchanged once credit is added |
 | `invalid_request` | The request body was rejected (`422`, or another `4xx` that is not `401`, `402`, or `429`) | Quarantine; the questions file is wrong and retrying would fail the same way |
 | `rate_limited` | The attempt budget was spent on `429`s | Requeue |
 | `server_error` | The API failed or was overloaded (`5xx`, including `529`) | Requeue |
@@ -499,7 +532,7 @@ carried under `input` instead.
 
 The API's own `detail` is surfaced as structured JSON rather than buried in the
 body string, in both the shapes it arrives in: the array a `422` sends, so a
-router can see which question was rejected, and the object a `402` sends —
+router can see which question was rejected, and the object a `402` sends:
 `{"error_type": "billing_error", "message": "…"}`.
 
 Error bodies are truncated to 2 KiB and may echo the state that was sent. That
@@ -510,7 +543,7 @@ store.
 
 This primitive publishes exactly two message types and makes no decision about
 the answers. Confidence banding, thresholds, and fan-out are `exec-handler`
-blocks running `jq` selectors over the published `answers` — which is why the
+blocks running `jq` selectors over the published `answers`, which is why the
 answers must keep the vendor's shape.
 
 ```toml
@@ -594,7 +627,7 @@ republishes the original event after a delay, with an attempt count in the
 payload and a guard that ends the loop.
 
 A `jq -c 'select(...)'` that matches nothing writes nothing and exits 0, which
-`exec-handler` treats as a filter and drops — so a band that does not apply
+`exec-handler` treats as a filter and drops, so a band that does not apply
 publishes nothing rather than an empty event. Changing a threshold is a config
 edit, not a rebuild, and the raw judgements stay reusable because no primitive
 has baked a policy into them.
@@ -744,7 +777,7 @@ environment instead:
 `exec-handler` and `exec-sink` set all five from the message being handled;
 `exec-source` sets `EMERGENT_CORRELATION_ID` alone, since it has no inbound
 message. A field the message does not carry is **removed** from the command's
-environment rather than left alone — the engine forwards its own environment
+environment rather than left alone: the engine forwards its own environment
 down to every command, so an ambient value would otherwise leak in and mislabel
 the output.
 
@@ -755,7 +788,7 @@ smuggling them through the payload.
 
 The `exec-common` crate provides the core command execution logic shared by `exec-handler` and `exec-sink`: payload-to-stdin piping, process-group isolation and timeout termination, JSON output parsing, identity-preserving error payloads, and the `MessageEnv` envelope-to-environment mapping.
 
-Its `error_payload` is the one place the error-event merge rule lives — reserved
+Its `error_payload` is the one place the error-event merge rule lives: reserved
 `error` key, inbound payload spread alongside, non-objects under `input`. Any
 primitive that publishes a failure applies that function rather than a second
 copy of the rule that can drift, which is how `jev-handler` error events join on
