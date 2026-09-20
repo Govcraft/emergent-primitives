@@ -25,8 +25,10 @@ pub struct Args {
     ///
     /// A value the router would refuse (no leading `/`, unbalanced braces, the
     /// `:id` syntax from before axum 0.8) or could never match (a `?` or `#`,
-    /// since the query string is not part of the route) is reported on one
-    /// line and the process exits 1. The README lists the rules.
+    /// since the query string is not part of the route; a space or a
+    /// non-ASCII character, which a request carries percent-encoded, so write
+    /// `/h%C3%BCk` for `/hük`) is reported on one line and the process exits 1.
+    /// The README lists the rules.
     #[arg(long, env = "HTTP_SOURCE_PATH", default_value = "/")]
     pub path: String,
 

@@ -9,7 +9,9 @@
 //! in literal text. The router registers those and then never matches them, so
 //! for them the comparison is the other way round (the router must accept), and
 //! `a_query_or_fragment_route_answers_404_to_everything` sends the requests that
-//! show why they are refused.
+//! show why they are refused. The same holds for a literal character a request
+//! only carries percent-encoded, with one more assertion: the spelling the
+//! error suggests is a route the same request does reach.
 //!
 //! The panics are caught with `catch_unwind`. That works under the test
 //! profile; the release profile aborts on panic, which is one more reason the
@@ -24,7 +26,7 @@ use axum::http::{Request, StatusCode};
 use axum::routing::any;
 use emergent_client::EmergentMessage;
 use http_source::app::{AppState, MessagePublisher, PublishFuture, build_router};
-use http_source::route_path::{MAX_CAPTURES, RoutePath, validate_route_path};
+use http_source::route_path::{MAX_CAPTURES, RoutePath, RoutePathError, validate_route_path};
 use tower::ServiceExt;
 
 /// Accepts every message and keeps none.
@@ -149,6 +151,20 @@ fn corpus() -> Vec<String> {
         "/{*rest?}",
         "/hook?x={",
         "hook?x=1",
+        "/h%C3%BCk",
+        "/hook%20with%20space",
+        "/a b/ü",
+        "/日本",
+        "/tab\there",
+        "/del\u{7f}x",
+        "/lt<x",
+        "/gt>x",
+        "/bt`x",
+        "/ü/{naïve}/ü",
+        "/{{ü}}",
+        "/ü/{",
+        "/a\"b|c^d[e]",
+        "/hook/{a b}/x",
     ];
 
     let mut corpus: Vec<String> = fixed.iter().map(ToString::to_string).collect();
@@ -183,7 +199,7 @@ fn the_validator_and_the_router_give_the_same_verdict() {
             "validator said {verdict:?} for {path:?}"
         );
     }
-    assert!(stricter >= 8, "only {stricter} rows hit a rule of our own");
+    assert!(stricter >= 18, "only {stricter} rows hit a rule of our own");
 }
 
 /// The status a router serving only `route` gives a request for `uri`.
@@ -267,4 +283,71 @@ fn an_accepted_path_never_panics_in_build_router() {
         assert!(built.is_ok(), "build_router panicked on accepted {path:?}");
     }
     assert!(accepted > 20, "only {accepted} corpus rows were accepted");
+}
+
+#[tokio::test]
+async fn an_unencoded_literal_route_is_missed_and_its_suggested_spelling_is_hit() {
+    // (route the validator refuses, the request a client sends for it)
+    let cases = [
+        ("/hük", "/h%C3%BCk"),
+        ("/hook with space", "/hook%20with%20space"),
+        ("/a b/ü", "/a%20b/%C3%BC"),
+        ("/日本", "/%E6%97%A5%E6%9C%AC"),
+        ("/lt<x", "/lt%3Cx"),
+        ("/bt`x", "/bt%60x"),
+        ("/ü/{naïve}/ü", "/%C3%BC/42/%C3%BC"),
+    ];
+
+    for (route, uri) in cases {
+        let Err(RoutePathError::UnencodedLiteral { encoded_path, .. }) = validate_route_path(route)
+        else {
+            panic!("{route:?} should be refused as an unencoded literal");
+        };
+        assert!(router_accepts(route), "the router registers {route:?}");
+        assert_eq!(
+            status_of(route, uri).await,
+            StatusCode::NOT_FOUND,
+            "route {route:?} as written, request {uri:?}"
+        );
+        assert_eq!(
+            status_of(&encoded_path, uri).await,
+            StatusCode::OK,
+            "route {encoded_path:?} as suggested, request {uri:?}"
+        );
+    }
+}
+
+#[test]
+fn some_refused_literals_cannot_even_be_put_in_a_request() {
+    // The HTTP types refuse these in a request target, which is the same
+    // answer the server gives on the wire: 400, before any routing.
+    for uri in ["/hook with space", "/tab\there", "/lt<x", "/gt>x", "/bt`x"] {
+        assert!(
+            Request::builder().uri(uri).body(Body::empty()).is_err(),
+            "a request for {uri:?} should not be buildable"
+        );
+        assert!(
+            matches!(
+                validate_route_path(uri),
+                Err(RoutePathError::UnencodedLiteral { .. })
+            ),
+            "{uri:?} should be refused as an unencoded literal"
+        );
+    }
+}
+
+#[tokio::test]
+async fn escapes_are_matched_byte_for_byte() {
+    // Why the encoded form is not registered on the operator's behalf: there
+    // is more than one, and the router tells them apart.
+    assert_eq!(status_of("/h%C3%BCk", "/h%C3%BCk").await, StatusCode::OK);
+    assert_eq!(
+        status_of("/h%C3%BCk", "/h%c3%bck").await,
+        StatusCode::NOT_FOUND
+    );
+    // The characters left alone do match as written.
+    assert_eq!(
+        status_of("/a\"b|c^d[e]", "/a\"b|c^d[e]").await,
+        StatusCode::OK
+    );
 }
